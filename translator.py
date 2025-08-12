@@ -89,7 +89,19 @@ class MangaTranslator:
             "gemini": self._translate_with_gemini
         }
 
-    def translate(self, text, method="google", source_lang="auto", context=None):
+        # Supported genres for specialized prompts
+        self.supported_genres = {
+            "auto": "Tự động",
+            "action": "Hành động",
+            "romance": "Tình cảm",
+            "comedy": "Hài hước",
+            "horror": "Kinh dị",
+            "wuxia": "Kiếm hiệp",
+            "xianxia": "Tiên hiệp",
+            "fantasy_game": "Game giả tưởng"
+        }
+
+    def translate(self, text, method="google", source_lang="auto", context=None, genre="auto"):
         """
         Translate text to Vietnamese using the specified method with context support
         
@@ -99,12 +111,13 @@ class MangaTranslator:
             source_lang (str): Source language code - "auto", "ja", "zh", "ko", "en"
             context (dict, optional): Context metadata for better translation:
                 - gender: 'male'/'female'/'neutral' (default: 'neutral')
-                - relationship: 'friend'/'senior'/'junior'/'family'/'stranger' (default: 'neutral') 
+                - relationship: 'friend'/'senior'/'junior'/'family'/'stranger' (default: 'neutral')
                 - formality: 'casual'/'polite'/'formal' (default: 'casual')
                 - bubble_limit: int (character limit for bubble fitting)
                 - is_thought: bool (internal monologue/thought bubble)
                 - is_sfx: bool (sound effect)
                 - scene_context: str (brief scene description)
+            genre (str): Story genre for specialized prompts (default: "auto")
             
         Returns:
             str: Translated text in Vietnamese
@@ -120,7 +133,7 @@ class MangaTranslator:
 
         if translator_func:
             if method == "gemini":
-                return translator_func(self._preprocess_text(text), source_lang, context)
+                return translator_func(self._preprocess_text(text), source_lang, context, genre)
             else:
                 return translator_func(self._preprocess_text(text), source_lang)
         else:
@@ -165,7 +178,7 @@ class MangaTranslator:
                                             to_language=self.target)
         return translated_text if translated_text is not None else text
 
-    def _translate_with_gemini(self, text, source_lang="auto", context=None):
+    def _translate_with_gemini(self, text, source_lang="auto", context=None, genre="auto"):
         """
         Translate using Google Gemini 2.0 Flash with context metadata support.
         
@@ -180,6 +193,7 @@ class MangaTranslator:
                 - is_thought: bool (internal monologue)
                 - is_sfx: bool (sound effect)
                 - scene_context: str (brief scene description)
+            genre (str): Story genre for specialized prompts
         """
         if not self.gemini_api_key:
             raise ValueError("Gemini API key not configured")
@@ -204,8 +218,8 @@ class MangaTranslator:
                 'X-goog-api-key': self.gemini_api_key
             }
             
-            # Get specialized prompt based on source language and context
-            prompt = self._get_translation_prompt(text, source_lang, context)
+            # Get specialized prompt based on source language, context and genre
+            prompt = self._get_translation_prompt(text, source_lang, context, genre)
             
             data = {
                 "contents": [
@@ -248,9 +262,9 @@ class MangaTranslator:
             # Fallback to Google Translate
             return self._translate_with_google(text, source_lang)
 
-    def _get_translation_prompt(self, text, source_lang, context=None):
+    def _get_translation_prompt(self, text, source_lang, context=None, genre="auto"):
         """
-        Generate enhanced translation prompt with context metadata support
+        Generate enhanced translation prompt with context metadata and genre support
         """
         # Parse context metadata
         gender = context.get('gender', 'neutral') if context else 'neutral'
@@ -282,13 +296,15 @@ class MangaTranslator:
         
         # Get language-specific rules
         lang_rules = self._get_language_rules(source_lang)
-        
+        genre_rules = self._get_genre_rules(genre)
+
+        genre_section = f"\nGENRE RULES:\n{genre_rules}\n" if genre_rules else ""
+
         return f"""Dịch "{text}" sang tiếng Việt.
 
 CONTEXT: {context_str}
 
-{lang_rules}
-
+{lang_rules}{genre_section}
 GLOBAL RULES:
 - Chỉ trả về chuỗi bản dịch, không nhãn, không ngoặc kép, không giải thích
 - Một dòng vào → một dòng ra (bảo toàn số dòng)
@@ -332,6 +348,19 @@ CHỈ TRẢ VỀ BẢN DỊCH:"""
 - Phân biệt formal/informal, nam/nữ, già/trẻ
 - Cảm thán: "Ồ!", "Trời!", "Chết tiệt!"
 - Hiệu ứng âm thanh: dịch phù hợp tiếng Việt"""
+
+    def _get_genre_rules(self, genre):
+        """Return genre-specific prompt rules"""
+        genre_prompts = {
+            "action": "- Tông giọng mạnh mẽ, nhịp độ nhanh, dùng động từ dứt khoát",
+            "romance": "- Dùng lời lẽ nhẹ nhàng, tình cảm, giàu cảm xúc",
+            "comedy": "- Giữ tính hài hước, sử dụng từ ngữ dí dỏm, đời thường",
+            "horror": "- Giữ không khí căng thẳng, u ám, từ ngữ gợi sự rùng rợn",
+            "wuxia": "- Phong cách giang hồ cổ trang, thuật ngữ võ hiệp, khí phách anh hùng",
+            "xianxia": "- Ngôn ngữ tu tiên huyền ảo, dùng từ linh lực, phi thăng, tiên giới",
+            "fantasy_game": "- Phong cách game giả tưởng, dùng từ level, kỹ năng, guild, boss",
+        }
+        return genre_prompts.get(genre, "")
 
     def _clean_gemini_response(self, response):
         """Enhanced cleaning to remove any AI explanations and return only translation"""
