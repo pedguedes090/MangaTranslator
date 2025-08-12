@@ -15,7 +15,6 @@ Công cụ dịch truyện tranh chuyên nghiệp hỗ trợ đa ngôn ngữ: Ma
 ### 🤖 AI Translation
 - **Gemini 2.0 Flash**: AI dịch thông minh với prompt tối ưu
 - **Context-aware**: Hiểu ngữ cảnh manga/manhua/manhwa
-- **Genre prompts**: Prompt chuyên dụng cho từng thể loại (Hành động, Tình cảm, Hài hước, Kinh dị, Kiếm hiệp, Tiên hiệp, Game giả tưởng)
 - **Cultural adaptation**: Dịch phù hợp văn hóa Việt Nam
 - **Onomatopoeia handling**: Xử lý hiệu ứng âm thanh chuyên nghiệp
 
@@ -63,9 +62,8 @@ python app.py
    - 🔄 **Bing, Sogou, Helsinki-NLP** - Các lựa chọn khác
 3. **Chọn font** phù hợp với style truyện
 4. **Chọn ngôn ngữ nguồn** hoặc để "Tự động"
-5. **Chọn thể loại truyện** (Hành động, Tình cảm, Hài hước, Kinh dị, Kiếm hiệp, Tiên hiệp, Game giả tưởng) hoặc để "Tự động"
-6. **Nhập Gemini API key** (cho dịch AI - tùy chọn)
-7. **Submit và thưởng thức kết quả!**
+5. **Nhập Gemini API key** (cho dịch AI - tùy chọn)
+6. **Submit và thưởng thức kết quả!**
 
 ## 🔧 Cấu hình
 
