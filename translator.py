@@ -89,7 +89,7 @@ class MangaTranslator:
             "gemini": self._translate_with_gemini
         }
 
-    def translate(self, text, method="google", source_lang="auto", context=None):
+    def translate(self, text, method="google", source_lang="auto", context=None, custom_prompt=None):
         """
         Translate text to Vietnamese using the specified method with context support
         
@@ -105,6 +105,7 @@ class MangaTranslator:
                 - is_thought: bool (internal monologue/thought bubble)
                 - is_sfx: bool (sound effect)
                 - scene_context: str (brief scene description)
+            custom_prompt (str, optional): Custom translation style prompt to override defaults
             
         Returns:
             str: Translated text in Vietnamese
@@ -120,7 +121,7 @@ class MangaTranslator:
 
         if translator_func:
             if method == "gemini":
-                return translator_func(self._preprocess_text(text), source_lang, context)
+                return translator_func(self._preprocess_text(text), source_lang, context, custom_prompt)
             else:
                 return translator_func(self._preprocess_text(text), source_lang)
         else:
@@ -165,7 +166,7 @@ class MangaTranslator:
                                             to_language=self.target)
         return translated_text if translated_text is not None else text
 
-    def _translate_with_gemini(self, text, source_lang="auto", context=None):
+    def _translate_with_gemini(self, text, source_lang="auto", context=None, custom_prompt=None):
         """
         Translate using Google Gemini 2.0 Flash with context metadata support.
         
@@ -205,7 +206,7 @@ class MangaTranslator:
             }
             
             # Get specialized prompt based on source language and context
-            prompt = self._get_translation_prompt(text, source_lang, context)
+            prompt = self._get_translation_prompt(text, source_lang, context, custom_prompt)
             
             data = {
                 "contents": [
@@ -248,10 +249,21 @@ class MangaTranslator:
             # Fallback to Google Translate
             return self._translate_with_google(text, source_lang)
 
-    def _get_translation_prompt(self, text, source_lang, context=None):
+    def _get_translation_prompt(self, text, source_lang, context=None, custom_prompt=None):
         """
         Generate enhanced translation prompt with context metadata support
         """
+        # If custom prompt provided, use it directly
+        if custom_prompt and custom_prompt.strip():
+            return f"""Bạn là một chuyên gia dịch thuật manga/comic chuyên nghiệp. Hãy dịch text sau sang tiếng Việt theo yêu cầu:
+
+{custom_prompt.strip()}
+
+Text cần dịch: "{text}"
+
+CHỈ trả về bản dịch tiếng Việt, không giải thích gì thêm."""
+        
+        # Use default prompt system
         # Parse context metadata
         gender = context.get('gender', 'neutral') if context else 'neutral'
         relationship = context.get('relationship', 'neutral') if context else 'neutral'  
