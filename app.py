@@ -51,7 +51,7 @@ DESCRIPTION = """
 """
 
 
-def predict(img, translation_method, font_path, source_language="auto", genre="auto", gemini_api_key=None):
+def predict(img, translation_method, font_path, source_language="auto", gemini_api_key=None):
     """
     Main prediction function for manga translation
     
@@ -60,7 +60,6 @@ def predict(img, translation_method, font_path, source_language="auto", genre="a
         translation_method: Translation service to use
         font_path: Path to font file for text rendering
         source_language: Source language code or 'auto' for auto-detection
-        genre: Comic genre for specialized prompts
         gemini_api_key: Optional Gemini API key
     
     Returns:
@@ -79,7 +78,6 @@ def predict(img, translation_method, font_path, source_language="auto", genre="a
     # Debug logging
     print(f"Using translation method: {translation_method}")
     print(f"Source language: {source_language}")
-    print(f"Genre: {genre}")
     print(f"API key available: {'Yes' if gemini_api_key else 'No'}")
     if gemini_api_key:
         print(f"API key preview: {gemini_api_key[:10]}...")
@@ -128,8 +126,7 @@ def predict(img, translation_method, font_path, source_language="auto", genre="a
         if text:  # Only translate if text exists
             text_translated = manga_translator.translate(text,
                                                          method=translation_method,
-                                                         source_lang=source_language,
-                                                         genre=genre)
+                                                         source_lang=source_language)
             print(f"🌏 Translated: '{text_translated}'")
         else:
             text_translated = ""
@@ -174,21 +171,9 @@ demo = gr.Interface(
                     label="Ngôn ngữ gốc",
                     value="auto"),
         
-        # Genre dropdown
-        gr.Dropdown([("Tự động", "auto"),
-                     ("Hành động", "action"),
-                     ("Tình cảm", "romance"),
-                     ("Hài hước", "comedy"),
-                     ("Kinh dị", "horror"),
-                     ("Kiếm hiệp", "wuxia"),
-                     ("Tiên hiệp", "xianxia"),
-                     ("Game giả tưởng", "fantasy_game")],
-                    label="Thể loại truyện",
-                    value="auto"),
-
         # API key input
-        gr.Textbox(label="Gemini API Key (Tùy chọn)",
-                   type="password",
+        gr.Textbox(label="Gemini API Key (Tùy chọn)", 
+                   type="password", 
                    placeholder="Nhập API key để dịch AI thông minh",
                    value=os.getenv("GEMINI_API_KEY", ""))
     ],
