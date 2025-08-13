@@ -50,97 +50,138 @@ def add_text(image, text, font_path, bubble_contour):
     print(f"📏 Bubble dimensions: {w}x{h} (area: {bubble_area}px²)")
 
     # Calculate optimal font size based on bubble dimensions
-    # Base font size calculation using area and aspect ratio
-    base_font_size = max(8, min(32, int(np.sqrt(bubble_area) * 0.08)))
-    
-    # Adjust based on aspect ratio (wide bubbles get smaller font)
+    # Enhanced algorithm with better classification for vertical and rectangular bubbles
     aspect_ratio = w / h if h > 0 else 1
-    if aspect_ratio > 2:  # Very wide bubble
-        base_font_size = int(base_font_size * 0.8)
-    elif aspect_ratio < 0.5:  # Very tall bubble  
-        base_font_size = int(base_font_size * 1.1)
+    min_dimension = min(w, h)
+    max_dimension = max(w, h)
     
-    print(f"🎨 Calculated base font size: {base_font_size}px (aspect ratio: {aspect_ratio:.2f})")
+    # More detailed classification for AGGRESSIVE font sizing - maximizing text size
+    if aspect_ratio < 0.3:  # Extremely vertical bubble
+        base_font_size = max(24, min(80, int(min_dimension * 0.32)))
+        bubble_type = "🔺 Extremely Vertical"
+        boost_factor = 1.7
+    elif aspect_ratio < 0.5:  # Very vertical bubble  
+        base_font_size = max(22, min(75, int(min_dimension * 0.28)))
+        bubble_type = "🔺 Very Vertical"
+        boost_factor = 1.55
+    elif aspect_ratio < 0.7:  # Vertical bubble
+        base_font_size = max(20, min(72, int(min_dimension * 0.25)))
+        bubble_type = "🔺 Vertical"
+        boost_factor = 1.4
+    elif aspect_ratio > 3.0:  # Extremely wide bubble
+        base_font_size = max(14, min(50, int(h * 0.60)))
+        bubble_type = "🔸 Extremely Wide"
+        boost_factor = 0.9
+    elif aspect_ratio > 2.2:  # Very wide bubble
+        base_font_size = max(16, min(55, int(h * 0.65)))
+        bubble_type = "🔸 Very Wide" 
+        boost_factor = 1.0
+    elif aspect_ratio > 1.6:  # Wide bubble
+        base_font_size = max(18, min(60, int(h * 0.70)))
+        bubble_type = "🔸 Wide"
+        boost_factor = 1.1
+    else:  # Square-ish bubble (0.7 <= ratio <= 1.6)
+        base_font_size = max(22, min(72, int(np.sqrt(bubble_area) * 0.18)))
+        bubble_type = "🔷 Balanced"
+        boost_factor = 1.2  # Increased boost for balanced bubbles
     
-    # Text formatting parameters
-    line_spacing_ratio = 1.2    # Line height as ratio of font size
-    max_width_ratio = 0.85      # Use 85% of bubble width for text
-    min_font_size = 8           # Minimum readable font size
-
-    # Smart text fitting algorithm
-    font_size = base_font_size
-    line_height = int(font_size * line_spacing_ratio)
-    max_text_width = int(w * max_width_ratio)
+    # Apply boost factor
+    base_font_size = int(base_font_size * boost_factor)
     
-    # Estimate characters per line based on font size
-    chars_per_line = max(10, max_text_width // (font_size * 0.6))
+    print(f"{bubble_type} bubble detected (ratio: {aspect_ratio:.2f})")
+    print(f"🎨 Initial font size: {base_font_size}px (boost: {boost_factor}x)")
     
+    # OPTIMAL DUAL-DIMENSION FITTING ALGORITHM
+    # Use 80-90% of both width and height as requested
+    target_width = int(w * 0.88)   # 88% of width - more aggressive
+    target_height = int(h * 0.88)  # 88% of height - more aggressive
+    line_spacing_ratio = 1.05      # Even tighter line spacing
+    min_font_size = 16
+    
+    print(f"🎯 Target area: {target_width}x{target_height} ({target_width * target_height}px²)")
+    
+    # ITERATIVE FONT SIZE OPTIMIZATION - test from large to small
+    best_font_size = min_font_size
     best_fit = None
-    attempts = 0
-    max_attempts = 10
     
-    while font_size >= min_font_size and attempts < max_attempts:
-        attempts += 1
+    # Start from a reasonable maximum and work down
+    max_test_font = min(120, max(target_width // 4, target_height // 2))
+    
+    for test_font in range(max_test_font, min_font_size - 1, -1):
+        font = ImageFont.truetype(font_path, size=test_font)
+        line_height = int(test_font * line_spacing_ratio)
         
-        # Try current font size
-        font = ImageFont.truetype(font_path, size=font_size)
-        line_height = int(font_size * line_spacing_ratio)
+        # Calculate optimal characters per line for this font size
+        # Improved character width estimation - varies by font size
+        if test_font >= 40:
+            char_width = test_font * 0.55  # Larger fonts are more compact
+        elif test_font >= 20:
+            char_width = test_font * 0.58  # Medium fonts
+        else:
+            char_width = test_font * 0.62  # Small fonts are wider proportionally
         
-        # Wrap text for current font size
+        chars_per_line = max(5, int(target_width / char_width))
+        
+        # Wrap text with current parameters
         wrapped_text = textwrap.fill(text, width=chars_per_line, 
-                                     break_long_words=True, break_on_hyphens=True)
+                                   break_long_words=True, break_on_hyphens=True)
         lines = wrapped_text.split('\n')
         
         # Calculate actual text dimensions
         max_line_width = 0
         for line in lines:
-            line_width = draw.textlength(line, font=font)
-            max_line_width = max(max_line_width, line_width)
+            if line.strip():  # Skip empty lines
+                line_width = draw.textlength(line, font=font)
+                max_line_width = max(max_line_width, line_width)
         
         total_text_height = len(lines) * line_height
         
-        print(f"   Attempt {attempts}: font={font_size}px, lines={len(lines)}, "
-              f"text_size={max_line_width:.0f}x{total_text_height}, "
-              f"bubble_size={w}x{h}")
-        
-        # Check if text fits within bubble
-        fits_width = max_line_width <= max_text_width
-        fits_height = total_text_height <= (h * 0.9)  # Use 90% of height
+        # Check if this font size fits BOTH dimensions
+        fits_width = max_line_width <= target_width
+        fits_height = total_text_height <= target_height
         
         if fits_width and fits_height:
-            best_fit = {
-                'font': font,
-                'font_size': font_size,
-                'line_height': line_height,
-                'wrapped_text': wrapped_text,
-                'lines': lines,
-                'max_line_width': max_line_width,
-                'total_height': total_text_height
-            }
-            print(f"   ✅ Found good fit: {font_size}px font")
-            break
-        
-        # Reduce font size and try again
-        font_size -= 2
-        chars_per_line = max(10, max_text_width // (font_size * 0.6))
+            # Found a good fit! Only save it if it's LARGER than current best
+            if best_fit is None or test_font > best_font_size:
+                best_font_size = test_font
+                best_fit = {
+                    'font': font,
+                    'font_size': test_font,
+                    'line_height': line_height,
+                    'wrapped_text': wrapped_text,
+                    'lines': lines,
+                    'max_line_width': max_line_width,
+                    'total_height': total_text_height,
+                    'chars_per_line': chars_per_line
+                }
+                print(f"   ✅ Font {test_font}px: {max_line_width:.0f}x{total_text_height} fits - NEW BEST!")
+            else:
+                print(f"   ✅ Font {test_font}px: {max_line_width:.0f}x{total_text_height} fits")
+            # Continue to find if there's an even LARGER font that works
+        else:
+            print(f"   ❌ Font {test_font}px: {max_line_width:.0f}x{total_text_height} too big for {target_width}x{target_height}")
+            # Continue testing smaller sizes
     
-    # Use best fit or fallback to smallest size
-    if best_fit is None:
-        print(f"   ⚠️  Using minimum font size: {min_font_size}px")
-        font_size = min_font_size
-        font = ImageFont.truetype(font_path, size=font_size)
-        line_height = int(font_size * line_spacing_ratio)
-        chars_per_line = max(8, max_text_width // (font_size * 0.6))
-        wrapped_text = textwrap.fill(text, width=chars_per_line, 
-                                     break_long_words=True, break_on_hyphens=True)
-        lines = wrapped_text.split('\n')
-        total_text_height = len(lines) * line_height
-    else:
+    # Use the best fit we found
+    if best_fit:
         font = best_fit['font']
         line_height = best_fit['line_height']
         wrapped_text = best_fit['wrapped_text']
         lines = best_fit['lines']
-        total_text_height = best_fit['total_height']                         
+        total_text_height = best_fit['total_height']
+        print(f"🎯 OPTIMAL: Using {best_font_size}px font (LARGEST that fits) with {len(lines)} lines")
+    else:
+        # Fallback: use minimum font size
+        font_size = min_font_size
+        font = ImageFont.truetype(font_path, size=font_size)
+        line_height = int(font_size * line_spacing_ratio)
+        char_width = font_size * 0.6
+        chars_per_line = max(5, int(target_width / char_width))
+        wrapped_text = textwrap.fill(text, width=chars_per_line, 
+                                   break_long_words=True, break_on_hyphens=True)
+        lines = wrapped_text.split('\n')
+        total_text_height = len(lines) * line_height
+        print(f"⚠️  FALLBACK: Using minimum {min_font_size}px font")
 
     # Calculate vertical centering position
     text_y = y + (h - total_text_height) // 2
