@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 #!/usr/bin/env python3
 """
-MangaTranslator - Fixed version with cache system
-No emoji characters to avoid encoding issues
+MangaTranslator - Enhanced version with batch image processing
+Supports processing up to 20 images simultaneously for optimal performance
 """
 
 # Core modules
@@ -11,6 +11,7 @@ from detect_bubbles import detect_bubbles
 from process_bubble import process_bubble
 from translator import MangaTranslator
 from multi_ocr import MultiLanguageOCR
+from batch_image_processor import batch_processor, ImageTask
 
 # External libraries
 from ultralytics import YOLO
@@ -30,6 +31,7 @@ from dotenv import load_dotenv
 import base64
 from io import BytesIO
 import json
+from typing import List, Tuple
 
 # Load environment variables from .env file
 load_dotenv()
@@ -39,10 +41,135 @@ MODEL = "model.pt"
 EXAMPLE_LIST = [["examples/0.png"], ["examples/ex0.png"]]
 OUTPUT_DIR = "outputs"
 CACHE_DIR = "cache"
+FONTS_DIR = "fonts"
 
 # Create directories if they don't exist
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(CACHE_DIR, exist_ok=True)
+os.makedirs(FONTS_DIR, exist_ok=True)
+
+def load_fonts_from_directory(fonts_dir=FONTS_DIR):
+    """
+    Tự động load tất cả font từ thư mục fonts
+    Returns: List of tuples (display_name, font_path)
+    """
+    font_list = []
+    supported_extensions = ['.ttf', '.otf', '.woff', '.woff2']
+    
+    if not os.path.exists(fonts_dir):
+        # Return default font if fonts directory doesn't exist
+        return [("animeace_i (default)", "fonts/animeace_i.ttf")]
+    
+    try:
+        for filename in os.listdir(fonts_dir):
+            if any(filename.lower().endswith(ext) for ext in supported_extensions):
+                font_path = os.path.join(fonts_dir, filename)
+                # Create display name from filename (remove extension)
+                display_name = os.path.splitext(filename)[0]
+                font_list.append((display_name, font_path))
+        
+        # Sort by display name for better organization
+        font_list.sort(key=lambda x: x[0])
+        
+        # If no fonts found, add default
+        if not font_list:
+            font_list = [("animeace_i (default)", "fonts/animeace_i.ttf")]
+            
+    except Exception as e:
+        print(f"Error loading fonts: {e}")
+        font_list = [("animeace_i (default)", "fonts/animeace_i.ttf")]
+    
+    return font_list
+
+# Load available fonts
+AVAILABLE_FONTS = load_fonts_from_directory()
+
+def refresh_fonts():
+    """Refresh font list and return updated choices"""
+    global AVAILABLE_FONTS
+    AVAILABLE_FONTS = load_fonts_from_directory()
+    status_msg = f"✅ Đã làm mới danh sách font: {len(AVAILABLE_FONTS)} font được tìm thấy"
+    print(status_msg)
+    # Return both choices and value for dropdown update, and status message
+    dropdown_update = gr.Dropdown(choices=AVAILABLE_FONTS, value=AVAILABLE_FONTS[0][1] if AVAILABLE_FONTS else "fonts/animeace_i.ttf")
+    status_update = gr.Markdown(status_msg, visible=True)
+    return dropdown_update, status_update
+
+def refresh_fonts_simple():
+    """Refresh font list for batch dropdown (no status)"""
+    global AVAILABLE_FONTS
+    AVAILABLE_FONTS = load_fonts_from_directory()
+    print(f"📝 Đã làm mới danh sách font: {len(AVAILABLE_FONTS)} font được tìm thấy")
+    return gr.Dropdown(choices=AVAILABLE_FONTS, value=AVAILABLE_FONTS[0][1] if AVAILABLE_FONTS else "fonts/animeace_i.ttf")
+
+# Global API Key Manager instance
+global_translator = None
+
+def get_global_translator():
+    """Get or create global translator instance"""
+    global global_translator
+    if global_translator is None:
+        global_translator = MangaTranslator()
+    return global_translator
+
+def get_api_key_status():
+    """Get status of all API keys"""
+    translator = get_global_translator()
+    status_list = translator.get_api_key_status()
+    
+    # Format for display
+    html_content = """
+    <div style=" padding: 20px; border-radius: 10px;">
+        <h3>Trạng Thái API Keys</h3>
+    """
+    
+    for status in status_list:
+        color = "#28a745" if status['is_active'] and not status['is_failed'] else "#dc3545"
+        usage_bar_width = min(status['usage_percentage'], 100)
+        
+        html_content += f"""
+        <div style="border: 1px solid #dee2e6; padding: 15px; margin: 10px 0; border-radius: 5px;">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <strong style="color: {color};">{status['name']}</strong>
+                <span style="font-family: monospace; color: #6c757d;">{status['key_preview']}</span>
+            </div>
+            <div style="margin-top: 10px;">
+                <div>Usage: {status['usage_count']}/{status['daily_limit']} ({status['usage_percentage']:.1f}%)</div>
+                <div style="background: #e9ecef; height: 8px; border-radius: 4px; margin-top: 5px;">
+                    <div style="background: {color}; height: 100%; width: {usage_bar_width}%; border-radius: 4px;"></div>
+                </div>
+                <div style="margin-top: 5px; font-size: 12px; color: #6c757d;">
+                    Status: {'Active' if status['is_active'] else 'Inactive'} | 
+                    {'Failed' if status['is_failed'] else 'OK'} |
+                    Last used: {status['last_used'] or 'Never'}
+                </div>
+            </div>
+        </div>
+        """
+    
+    html_content += "</div>"
+    return html_content
+
+def add_new_api_key(key, name, daily_limit):
+    """Add new API key"""
+    if not key or not name:
+        return "❌ Vui lòng nhập API key và tên!", get_api_key_status()
+    
+    try:
+        translator = get_global_translator()
+        translator.add_api_key(key, name, int(daily_limit or 1000))
+        return f"✅ Đã thêm API key: {name}", get_api_key_status()
+    except Exception as e:
+        return f"❌ Lỗi thêm API key: {e}", get_api_key_status()
+
+def reset_failed_api_keys():
+    """Reset failed API keys"""
+    try:
+        translator = get_global_translator()
+        translator.reset_failed_keys()
+        return "✅ Đã reset tất cả API key bị lỗi!", get_api_key_status()
+    except Exception as e:
+        return f"❌ Lỗi reset: {e}", get_api_key_status()
 
 class ImageCache:
     """Cache manager for processed images"""
@@ -133,20 +260,26 @@ def cleanup_debug_files():
 atexit.register(cleanup_debug_files)
 
 def process_single_image(img, translation_method, font_path, source_language="auto", gemini_api_key=None, custom_prompt=None):
-    """Process a single image for translation"""
+    """Process a single image with optimized translation pipeline"""
     
     # Set default values if None
     if translation_method is None:
         translation_method = "google"
     if font_path is None:
-        font_path = "fonts/animeace_i.ttf"
+        font_path = AVAILABLE_FONTS[0][1] if AVAILABLE_FONTS else "fonts/animeace_i.ttf"
 
-    # Handle API key - use from input or environment variable
-    if not gemini_api_key or gemini_api_key.strip() == "":
-        gemini_api_key = os.getenv("GEMINI_API_KEY", None)
+    # Handle API key - DEPRECATED: Use multi-key system from api_keys.json
+    if gemini_api_key and gemini_api_key.strip():
+        print(f"⚠️ Deprecated: API key truyền từ UI. Khuyến nghị dùng api_keys.json")
+        gemini_api_key = gemini_api_key.strip()
+    else:
+        # Don't use .env - let multi-key system handle it
+        gemini_api_key = None
+        print("✅ Using multi-API key system from api_keys.json")
     
     # Handle custom prompt
     if custom_prompt and custom_prompt.strip():
+        custom_prompt = custom_prompt.strip()
         print(f"Using custom prompt: {custom_prompt[:50]}")
     else:
         custom_prompt = None
@@ -155,16 +288,20 @@ def process_single_image(img, translation_method, font_path, source_language="au
     # Debug logging
     print(f"Using translation method: {translation_method}")
     print(f"Source language: {source_language}")
-    print(f"API key available: {'Yes' if gemini_api_key else 'No'}")
 
     # Step 1: Detect text bubbles using YOLO model
     results = detect_bubbles(MODEL, img)
     print(f"Detected {len(results)} bubbles")
     
-    # Sort bubbles by Y coordinate (top to bottom)
+    # Early return if no bubbles detected
+    if not results:
+        print("⚠️ No text bubbles detected in image")
+        return img
+    
+    # Sort bubbles by Y coordinate (top to bottom) for better translation context
     results = sorted(results, key=lambda x: x[1])
 
-    # Step 2: Initialize translator with optional Gemini API key
+    # Step 2: Initialize translator - use multi-key system
     manga_translator = MangaTranslator(gemini_api_key=gemini_api_key)
     
     # Step 3: Initialize multi-language OCR system
@@ -178,48 +315,93 @@ def process_single_image(img, translation_method, font_path, source_language="au
     original_image = np.array(img)
     image = original_image.copy()
 
-    # Step 4: Process each detected bubble
+    # Step 4: Extract all texts first for potential batch translation
+    extracted_texts = []
+    bubble_info = []
+    
+    print("🔍 Extracting text from all bubbles...")
     for idx, result in enumerate(results):
         x1, y1, x2, y2, score, class_id = result
-        print(f"Processing bubble {idx+1}/{len(results)}")
-
+        
         # Extract the bubble region from ORIGINAL image
         detected_image = original_image[int(y1):int(y2), int(x1):int(x2)]
 
         # Convert to PIL Image for OCR processing
         im = Image.fromarray(np.uint8(detected_image))
         
-        # Step 5: Extract text using appropriate OCR engine
+        # Extract text using appropriate OCR engine
         text = multi_ocr.extract_text(im, source_language, method="auto")
-        
-        # Clean OCR text before translation
         text = text.strip() if text else ""
         
-        print(f"OCR Text: '{text}'")
+        extracted_texts.append(text)
+        bubble_info.append({
+            'coords': (x1, y1, x2, y2),
+            'text': text,
+            'index': idx
+        })
+        
+        print(f"Bubble {idx+1}: '{text}'")
 
-        # Step 6: Process the bubble for text replacement
-        working_bubble = image[int(y1):int(y2), int(x1):int(x2)]
-        processed_bubble, cont = process_bubble(working_bubble)
-
-        # Step 7: Translate the extracted text
-        if text:
-            text_translated = manga_translator.translate(text,
-                                                         method=translation_method,
-                                                         source_lang=source_language,
-                                                         custom_prompt=custom_prompt)
-            print(f"Translated: '{text_translated}'")
+    # Step 5: Batch translate all texts for better performance
+    if any(extracted_texts):  # Only if we have some text
+        print(f"🔄 Starting batch translation of {len(extracted_texts)} texts...")
+        
+        # Filter out empty texts for batch translation
+        non_empty_texts = [text for text in extracted_texts if text.strip()]
+        
+        if non_empty_texts:
+            translated_texts = manga_translator.translate_batch(
+                non_empty_texts, 
+                method=translation_method, 
+                source_lang=source_language, 
+                custom_prompt=custom_prompt
+            )
+            
+            # Map translations back to original list
+            translated_map = dict(zip(non_empty_texts, translated_texts))
+            final_translations = [translated_map.get(text, text) for text in extracted_texts]
         else:
-            text_translated = ""
-            print("No text detected, skipping translation")
+            final_translations = extracted_texts
+    else:
+        final_translations = extracted_texts
 
-        # Step 8: Add translated text back to the image
-        print(f"Adding text to bubble {idx+1}")
-        image[int(y1):int(y2), int(x1):int(x2)] = add_text(processed_bubble, text_translated, font_path, cont)
+    # Step 6: Process each bubble with translated text
+    print("🎨 Adding translated text to bubbles...")
+    for idx, bubble in enumerate(bubble_info):
+        x1, y1, x2, y2 = bubble['coords']
+        text_translated = final_translations[idx] if idx < len(final_translations) else ""
+        
+        if text_translated:
+            print(f"Processing bubble {idx+1}: '{text_translated}'")
+            
+            # Process the bubble for text replacement
+            working_bubble = image[int(y1):int(y2), int(x1):int(x2)]
+            processed_bubble, cont = process_bubble(working_bubble)
+            
+            # Add translated text back to the image
+            image[int(y1):int(y2), int(x1):int(x2)] = add_text(processed_bubble, text_translated, font_path, cont)
+        else:
+            print(f"Skipping bubble {idx+1}: no text to translate")
+
+    # Display cache and performance statistics
+    stats = manga_translator.get_cache_stats()
+    print(f"📊 Translation cache: {stats['cache_size']} entries, {stats['hit_rate']:.1f}% hit rate")
+    
+    # Show performance monitor stats if available
+    try:
+        from performance_monitor import performance_monitor
+        performance_monitor.record_memory_usage()
+        performance_monitor.print_live_stats()
+    except ImportError:
+        pass
 
     return Image.fromarray(image)
 
 def process_batch_cached(images, translation_method, font_path, source_language="auto", gemini_api_key=None, custom_prompt=None):
-    """Process multiple images in batch and store in cache"""
+    """
+    Enhanced batch processing using the new BatchImageProcessor
+    Supports processing up to 20 images simultaneously with optimal resource usage
+    """
     
     if not images:
         return None, [], "No images uploaded"
@@ -228,11 +410,152 @@ def process_batch_cached(images, translation_method, font_path, source_language=
     session_id = str(uuid.uuid4())
     total_images = len(images)
     
-    print(f"Starting cached batch processing: {total_images} images")
-    print(f"Session ID: {session_id}")
+    print(f"🚀 Starting enhanced batch processing: {total_images} images")
+    print(f"📋 Session ID: {session_id}")
+    print(f"🎯 Translation method: {translation_method}")
+    print(f"🌐 Source language: {source_language}")
     
     # Clean old cache to free memory
     image_cache.clear_old_sessions()
+    
+    # Prepare image files for batch processor
+    image_files = []
+    for idx, img_file in enumerate(images):
+        try:
+            # Open image
+            if isinstance(img_file, str):
+                img = Image.open(img_file)
+                original_name = os.path.basename(img_file)
+            else:
+                img = Image.open(img_file.name)
+                original_name = img_file.name if hasattr(img_file, 'name') else f"image_{idx+1}.png"
+            
+            image_files.append((img, original_name))
+            
+        except Exception as e:
+            print(f"❌ Error loading image {idx+1}: {e}")
+            # Create a placeholder for failed image
+            error_img = Image.new('RGB', (100, 100), color='red')
+            image_files.append((error_img, f"error_{idx+1}.png"))
+    
+    print(f"📸 Loaded {len(image_files)} images for processing")
+    
+    # Process using the new batch processor
+    try:
+        batch_result = batch_processor.process_images(
+            image_files=image_files,
+            translation_method=translation_method,
+            font_path=font_path,
+            source_language=source_language,
+            gemini_api_key=gemini_api_key,
+            custom_prompt=custom_prompt
+        )
+        
+        # Convert batch results to cache format
+        processed_images = []
+        preview_images = []
+        
+        for task in batch_result.tasks:
+            if task.status == "completed" and task.result:
+                # Successful processing
+                base_name = os.path.splitext(task.filename)[0]
+                output_filename = f"{base_name}_translated.png"
+                
+                image_data = {
+                    "original_name": task.filename,
+                    "output_name": output_filename,
+                    "image": task.result,
+                    "status": "success",
+                    "index": task.id,
+                    "processing_time": task.processing_time,
+                    "bubble_count": task.bubble_count,
+                    "text_count": task.text_count
+                }
+                processed_images.append(image_data)
+                preview_images.append(task.result)
+                
+                print(f"✅ {task.filename}: {task.bubble_count} bubbles, {task.text_count} texts, {task.processing_time:.2f}s")
+                
+            else:
+                # Failed processing
+                image_data = {
+                    "original_name": task.filename,
+                    "output_name": "N/A",
+                    "image": None,
+                    "status": "error",
+                    "error_message": task.error or "Unknown error",
+                    "index": task.id
+                }
+                processed_images.append(image_data)
+                
+                print(f"❌ {task.filename}: {task.error}")
+        
+        # Store session data in cache
+        image_cache.store_session_images(session_id, processed_images)
+        
+        # Generate enhanced status message
+        successful_count = batch_result.successful_images
+        failed_count = batch_result.failed_images
+        total_time = batch_result.total_time
+        total_bubbles = batch_result.summary['total_bubbles']
+        total_texts = batch_result.summary['total_texts']
+        batches_created = batch_result.summary['batches_created']
+        
+        if failed_count == 0:
+            status_msg = f"""✅ BATCH PROCESSING COMPLETE!
+📊 Successfully processed: {successful_count}/{total_images} images
+⏱️ Total time: {total_time:.2f}s (avg {total_time/total_images:.2f}s per image)
+🎯 Detected: {total_bubbles} bubbles, {total_texts} text blocks
+📦 Processed in {batches_created} optimized batches
+🚀 Batch efficiency: {batch_result.summary['api_efficiency']}"""
+        else:
+            status_msg = f"""⚠️ BATCH PROCESSING COMPLETE WITH ERRORS!
+📊 Results: {successful_count} successful, {failed_count} failed
+⏱️ Total time: {total_time:.2f}s
+🎯 Detected: {total_bubbles} bubbles, {total_texts} text blocks
+📦 Processed in {batches_created} optimized batches"""
+        
+        # Print batch processing statistics
+        print("\n" + "="*50)
+        print("📊 BATCH PROCESSING STATISTICS")
+        print("="*50)
+        print(f"Total images: {total_images}")
+        print(f"Successful: {successful_count}")
+        print(f"Failed: {failed_count}")
+        print(f"Total time: {total_time:.2f}s")
+        print(f"Average per image: {total_time/total_images:.2f}s")
+        print(f"Total bubbles detected: {total_bubbles}")
+        print(f"Total texts extracted: {total_texts}")
+        print(f"Batches created: {batches_created}")
+        print(f"Batch efficiency: {batch_result.summary['api_efficiency']}")
+        
+        # Print global processor statistics
+        global_stats = batch_processor.get_statistics()
+        print(f"\n🌍 GLOBAL PROCESSOR STATS:")
+        print(f"Total batches processed: {global_stats['total_batches']}")
+        print(f"Total images processed: {global_stats['total_images']}")
+        print(f"Success rate: {global_stats['successful_images']}/{global_stats['total_images']}")
+        print(f"Average batch time: {global_stats['average_batch_time']:.2f}s")
+        print(f"Average image time: {global_stats['average_image_time']:.2f}s")
+        print("="*50)
+        
+        return session_id, preview_images, status_msg
+        
+    except Exception as e:
+        error_msg = f"❌ Batch processing failed: {str(e)}"
+        print(error_msg)
+        
+        # Fallback to original processing
+        print("🔄 Falling back to original processing method...")
+        return process_batch_cached_fallback(images, translation_method, font_path, source_language, gemini_api_key, custom_prompt)
+
+def process_batch_cached_fallback(images, translation_method, font_path, source_language="auto", gemini_api_key=None, custom_prompt=None):
+    """Fallback batch processing using original method"""
+    
+    session_id = str(uuid.uuid4())
+    total_images = len(images)
+    
+    print(f"🔄 Fallback batch processing: {total_images} images")
     
     processed_images = []
     preview_images = []
@@ -315,7 +638,7 @@ def create_file_list_display_cached(session_id):
     successful_count = session_data['successful_count']
     
     html = f"""
-    <div style="background: #f8f9fa; padding: 20px; border-radius: 10px; margin: 10px 0;">
+    <div style=" padding: 20px; border-radius: 10px; margin: 10px 0;">
         <h3 style="color: #2c3e50; margin-bottom: 15px;">Processed Files List</h3>
         <div style="background: #e3f2fd; padding: 10px; border-radius: 5px; margin-bottom: 15px;">
             <strong>Summary:</strong> {successful_count}/{total_count} images successful | Session: {session_id[:8]}
@@ -387,28 +710,6 @@ def predict(img, translation_method, font_path, source_language="auto", gemini_a
 # UI Configuration
 TITLE = "Multi-Language Comic Translator - Batch Processing with Cache"
 DESCRIPTION = """
-Dịch truyện tranh đa ngôn ngữ sang tiếng Việt! (Hỗ trợ nhiều ảnh)
-
-OCR Engine tối ưu:
-- Manga (Nhật): manga-ocr (chuyên biệt)
-- Manhua (Trung): PaddleOCR (tối ưu Chinese)  
-- Manhwa (Hàn): EasyOCR (hỗ trợ Korean tốt)
-- Comics (Anh): EasyOCR (đa ngôn ngữ)
-
-AI Translation: Gemini 2.0 Flash với prompt tối ưu cho từng loại truyện
-
-Tính năng mới:
-- Batch Processing: Upload nhiều ảnh cùng lúc
-- Preview Images: Xem trước kết quả ngay lập tức  
-- Smart Cache: Lưu trong bộ nhớ, tạo ZIP chỉ khi cần
-- Download Options: Tải từng file hoặc tất cả dưới dạng ZIP
-
-Hướng dẫn sử dụng:
-1. Upload một hoặc nhiều ảnh vào mục "Input Images"
-2. Chọn cấu hình dịch thuật phù hợp
-3. Nhấn "Dịch Truyện" để bắt đầu xử lý
-4. Xem preview kết quả trong gallery
-5. Nhấn "Tạo ZIP" nếu muốn tải về tất cả
 """
 
 # Create Gradio interface with tabs for single and batch processing
@@ -430,23 +731,21 @@ with gr.Blocks(title=TITLE, theme=gr.themes.Soft()) as demo:
                     
                     # Configuration inputs
                     translation_method = gr.Dropdown(
-                        [("Google Translate", "google"),
-                         ("Gemini AI (Khuyến nghị)", "gemini"),
-                         ("Helsinki-NLP (JP->EN)", "hf"),
-                         ("Sogou", "sogou"),
-                         ("Bing", "bing")],
+                        [("Gemini AI (Khuyến nghị)", "gemini"),
+                         ("DeepInfra Gemma (AI - Miễn phí)", "deepinfra"),
+                         ("NLLB API (Chất lượng cao)", "nllb")],
                         label="Phương Pháp Dịch",
                         value="gemini"
                     )
                     
                     font_path = gr.Dropdown(
-                        [("animeace_i", "fonts/animeace_i.ttf"),
-                         ("animeace2_reg", "fonts/animeace2_reg.ttf"),
-                         ("mangati", "fonts/mangati.ttf"),
-                         ("ariali", "fonts/ariali.ttf")],
+                        AVAILABLE_FONTS,
                         label="Phông Chữ",
-                        value="fonts/animeace_i.ttf"
+                        value=AVAILABLE_FONTS[0][1] if AVAILABLE_FONTS else "fonts/animeace_i.ttf"
                     )
+                    
+                    refresh_fonts_btn = gr.Button("🔄 Làm mới danh sách font", size="sm")
+                    font_status = gr.Markdown("", visible=False)
                     
                     source_language = gr.Dropdown(
                         [("Tự Động Nhận Dạng", "auto"),
@@ -484,145 +783,328 @@ with gr.Blocks(title=TITLE, theme=gr.themes.Soft()) as demo:
                 label="Ảnh Mẫu"
             )
         
-        # Tab 2: Batch Processing with Cache & Preview
-        with gr.TabItem("Xử Lý Batch"):
+        # Tab 2: Batch Processing
+        with gr.TabItem("Xử Lý Hàng Loạt"):
             with gr.Row():
-                with gr.Column(scale=1):
-                    batch_images_input = gr.Files(
-                        label="Tải nhiều ảnh manga lên (PNG, JPG, JPEG)",
+                with gr.Column():
+                    folder_input = gr.File(
                         file_count="multiple",
-                        file_types=["image"]
+                        file_types=["image"],
+                        label="Chọn ảnh để xử lý hàng loạt"
                     )
                     
-                    # Shared configuration for batch
+                    # Configuration for batch
                     batch_translation_method = gr.Dropdown(
-                        [("Google Translate", "google"),
-                         ("Gemini AI (Khuyến nghị)", "gemini"),
-                         ("Helsinki-NLP (JP->EN)", "hf"),
-                         ("Sogou", "sogou"),
-                         ("Bing", "bing")],
+                        [("Gemini AI (Khuyến nghị)", "gemini"),
+                         ("DeepInfra Gemma (AI - Miễn phí)", "deepinfra"),
+                         ("NLLB API (Chất lượng cao)", "nllb")],
                         label="Phương Pháp Dịch",
                         value="gemini"
                     )
                     
                     batch_font_path = gr.Dropdown(
-                        [("animeace_i", "fonts/animeace_i.ttf"),
-                         ("animeace2_reg", "fonts/animeace2_reg.ttf"),
-                         ("mangati", "fonts/mangati.ttf"),
-                         ("ariali", "fonts/ariali.ttf")],
-                        label="Font",
-                        value="fonts/animeace_i.ttf"
+                        AVAILABLE_FONTS,
+                        label="Phông Chữ",
+                        value=AVAILABLE_FONTS[0][1] if AVAILABLE_FONTS else "fonts/animeace_i.ttf"
                     )
                     
                     batch_source_language = gr.Dropdown(
-                        [("Auto Detect", "auto"),
+                        [("Tự Động Nhận Dạng", "auto"),
                          ("Japanese (Manga)", "ja"),
                          ("Chinese (Manhua)", "zh"),
                          ("Korean (Manhwa)", "ko"),
                          ("English", "en")],
-                        label="Source Language",
+                        label="Ngôn Ngữ Gốc",
                         value="auto"
                     )
                     
                     batch_gemini_api_key = gr.Textbox(
-                        label="Gemini API Key (Optional)", 
+                        label="Gemini API Key (Tùy chọn)", 
                         type="password", 
-                        placeholder="Enter API key for AI translation",
+                        placeholder="Nhập API key cho dịch thuật AI",
                         value=os.getenv("GEMINI_API_KEY", "")
                     )
                     
                     batch_custom_prompt = gr.Textbox(
-                        label="Custom Prompt (Advanced)", 
+                        label="Prompt Tùy Chỉnh (Nâng cao)", 
                         lines=3,
-                        placeholder="Custom translation style for entire batch",
+                        placeholder="Để trống để sử dụng prompt tự động",
                         value=""
                     )
                     
-                    batch_submit_btn = gr.Button("Xử Lý Batch", variant="primary", size="lg")
+                    batch_submit_btn = gr.Button("Xử Lý Hàng Loạt", variant="primary")
                 
-                with gr.Column(scale=2):
-                    batch_status = gr.Textbox(
-                        label="Processing Status",
-                        interactive=False,
-                        value="Waiting for images..."
-                    )
-                    
-                    # Preview gallery for processed images
-                    batch_preview_gallery = gr.Gallery(
-                        label="Preview Results",
+                with gr.Column():
+                    batch_output = gr.Gallery(
+                        label="Kết Quả Hàng Loạt",
                         show_label=True,
-                        elem_id="preview_gallery",
+                        elem_id="gallery",
                         columns=2,
                         rows=2,
-                        height="400px",
-                        show_share_button=False
+                        height="auto"
                     )
             
-            # File list and download section
+            batch_status = gr.HTML("Sẵn sàng xử lý hàng loạt")
+        
+        # Tab 3: API Management - Cleaner interface
+        with gr.TabItem("🔑 Quản Lý API", elem_id="api-tab"):
+            gr.HTML("""
+            <div class="config-panel">
+                <h2 style="color: #007bff; margin-top: 0;">� Multi-API Key Management</h2>
+                <p style="color: #6c757d;">
+                    Quản lý nhiều GEMINI API Key để tối ưu hóa sử dụng và tránh giới hạn rate limit
+                </p>
+                <div style=" padding: 15px; border-radius: 8px; margin: 15px 0;">
+                    <strong>✨ Tính năng:</strong>
+                    <ul style="margin: 10px 0; padding-left: 20px;">
+                        <li>🔄 Round-robin rotation giữa các key</li>
+                        <li>🛡️ Auto failover khi key bị lỗi</li>
+                        <li>📊 Daily usage tracking</li>
+                        <li>⚖️ Load balancing thông minh</li>
+                    </ul>
+                </div>
+            </div>
+            """)
+            
             with gr.Row():
-                with gr.Column():
-                    batch_file_list = gr.HTML(
-                        label="Processed files list",
-                        value="<p>No files processed yet</p>"
+                with gr.Column(scale=2):
+                    # API Key status display with better formatting
+                    gr.HTML("<h3 style='color: #28a745; margin: 20px 0 15px 0;'>📊 Trạng Thái API Keys</h3>")
+                    api_status_display = gr.HTML(
+                        value=get_api_key_status(),
+                        elem_id="api_status"
                     )
+                    
+                    # Action buttons in a clean row
+                    with gr.Row():
+                        refresh_status_btn = gr.Button(
+                            "🔄 Refresh",
+                            variant="secondary",
+                            elem_classes="action-button secondary-button"
+                        )
+                        reset_failed_btn = gr.Button(
+                            "♻️ Reset Failed",
+                            variant="secondary", 
+                            elem_classes="action-button secondary-button"
+                        )
                 
                 with gr.Column(scale=1):
-                    # Hidden session ID storage
-                    session_id_state = gr.Textbox(
-                        value="",
-                        visible=False,
-                        interactive=False
-                    )
-                    
-                    create_zip_btn = gr.Button(
-                        "Create ZIP",
-                        variant="secondary",
-                        visible=False
-                    )
-                    
-                    batch_download_zip = gr.File(
-                        label="Download ZIP",
-                        visible=False
-                    )
-                    
-                    zip_status = gr.Textbox(
-                        label="ZIP Status",
-                        interactive=False,
-                        visible=False
-                    )
+                    with gr.Group():
+                        gr.HTML("<h3 style='color: #007bff; margin: 20px 0 15px 0;'>➕ Thêm API Key</h3>")
+                        
+                        new_api_key = gr.Textbox(
+                            label="🔑 API Key",
+                            type="password",
+                            placeholder="Nhập GEMINI API KEY mới",
+                            interactive=True
+                        )
+                        
+                        new_key_name = gr.Textbox(
+                            label="🏷️ Tên Mô Tả",
+                            placeholder="VD: Primary Key, Backup Key...",
+                            interactive=True
+                        )
+                        
+                        new_daily_limit = gr.Number(
+                            label="📈 Daily Limit",
+                            value=1000,
+                            minimum=1,
+                            maximum=10000,
+                            interactive=True
+                        )
+                        
+                        add_key_btn = gr.Button(
+                            "➕ Thêm Key",
+                            variant="primary",
+                            elem_classes="action-button primary-button"
+                        )
+                        
+                        # Status message with better styling
+                        key_management_status = gr.HTML(
+                            """<div class="status-panel">
+                                <p style="margin: 0; text-align: center; color: #6c757d;">
+                                    ℹ️ Kết quả thao tác sẽ hiển thị ở đây
+                                </p>
+                            </div>""",
+                            visible=True
+                        )
     
-    # Event handlers
+    # Event handlers with improved error handling and user feedback
+    def handle_single_image_process(img, method, font, lang, api_key, prompt):
+        """Enhanced single image processing with better error handling"""
+        if img is None:
+            return None, """<div class="error-panel">
+                <p style="margin: 0; text-align: center;">
+                    ❌ Vui lòng upload ảnh trước khi xử lý
+                </p>
+            </div>"""
+        
+        try:
+            result = predict(img, method, font, lang, api_key, prompt)
+            success_html = """<div class="status-panel">
+                <p style="margin: 0; text-align: center; color: #28a745;">
+                    ✅ Xử lý thành công! Ảnh đã được dịch.
+                </p>
+            </div>"""
+            return result, success_html
+        except Exception as e:
+            error_html = f"""<div class="error-panel">
+                <p style="margin: 0; text-align: center;">
+                    ❌ Lỗi xử lý: {str(e)[:100]}...
+                </p>
+            </div>"""
+            return None, error_html
+    
+    def handle_batch_process(images, method, font, lang, api_key, prompt):
+        """Enhanced batch processing with progress feedback"""
+        if not images:
+            error_status = """<div class="error-panel">
+                <h4 style="margin-top: 0; color: #dc3545;">❌ Lỗi</h4>
+                <p style="margin: 0;">Vui lòng upload ít nhất một ảnh</p>
+            </div>"""
+            return "", [], "<p>Chưa có file nào</p>", error_status
+        
+        processing_status = f"""<div class="status-panel">
+            <h4 style="margin-top: 0; color: #007bff;">🔄 Đang Xử Lý</h4>
+            <p style="margin: 0;">Đang xử lý {len(images)} ảnh. Vui lòng đợi...</p>
+            <div style="background: #e9ecef; height: 6px; border-radius: 3px; margin-top: 10px;">
+                <div style="background: #007bff; height: 100%; width: 0%; border-radius: 3px; animation: progress 2s infinite;"></div>
+            </div>
+        </div>"""
+        
+        try:
+            session_id, preview_images, file_list_html, status_msg = batch_predict(
+                images, method, font, lang, api_key, prompt
+            )
+            
+            if "Complete!" in status_msg or "COMPLETE!" in status_msg:
+                final_status = f"""<div class="status-panel">
+                    <h4 style="margin-top: 0; color: #28a745;">✅ Hoàn Thành</h4>
+                    <p style="margin: 0;">{status_msg}</p>
+                </div>"""
+            else:
+                final_status = f"""<div class="error-panel">
+                    <h4 style="margin-top: 0; color: #dc3545;">⚠️ Có Lỗi</h4>
+                    <p style="margin: 0;">{status_msg}</p>
+                </div>"""
+            
+            return session_id, preview_images, file_list_html, final_status
+            
+        except Exception as e:
+            error_status = f"""<div class="error-panel">
+                <h4 style="margin-top: 0; color: #dc3545;">❌ Lỗi Hệ Thống</h4>
+                <p style="margin: 0;">Lỗi xử lý batch: {str(e)[:100]}...</p>
+            </div>"""
+            return "", [], "<p>Lỗi xử lý</p>", error_status
+    
+    def handle_font_refresh():
+        """Enhanced font refresh with user feedback"""
+        try:
+            dropdown, status = refresh_fonts()
+            return dropdown, """<div class="status-panel" style="margin: 10px 0;">
+                <p style="margin: 0; color: #28a745; text-align: center;">
+                    ✅ Đã làm mới danh sách font thành công
+                </p>
+            </div>"""
+        except Exception as e:
+            return None, f"""<div class="error-panel" style="margin: 10px 0;">
+                <p style="margin: 0; color: #dc3545; text-align: center;">
+                    ❌ Lỗi làm mới font: {str(e)}
+                </p>
+            </div>"""
+    
+    def handle_zip_creation(session_id):
+        """Enhanced ZIP creation with better feedback"""
+        if not session_id:
+            return None, """<div class="error-panel">
+                <p style="margin: 0; text-align: center;">
+                    ❌ Không có session để tạo ZIP
+                </p>
+            </div>"""
+        
+        try:
+            zip_path, status_msg = create_zip_download(session_id)
+            if zip_path:
+                return zip_path, f"""<div class="status-panel">
+                    <p style="margin: 0; text-align: center; color: #28a745;">
+                        ✅ {status_msg}
+                    </p>
+                </div>"""
+            else:
+                return None, f"""<div class="error-panel">
+                    <p style="margin: 0; text-align: center;">
+                        ❌ {status_msg}
+                    </p>
+                </div>"""
+        except Exception as e:
+            return None, f"""<div class="error-panel">
+                <p style="margin: 0; text-align: center;">
+                    ❌ Lỗi tạo ZIP: {str(e)}
+                </p>
+            </div>"""
+    
+    def handle_api_management(action, *args):
+        """Enhanced API management with better feedback"""
+        try:
+            if action == "add":
+                key, name, limit = args
+                status_msg, api_status = add_new_api_key(key, name, limit)
+                if "✅" in status_msg:
+                    status_html = f"""<div class="status-panel">
+                        <p style="margin: 0; text-align: center; color: #28a745;">{status_msg}</p>
+                    </div>"""
+                else:
+                    status_html = f"""<div class="error-panel">
+                        <p style="margin: 0; text-align: center;">{status_msg}</p>
+                    </div>"""
+                return status_html, api_status
+            elif action == "reset":
+                status_msg, api_status = reset_failed_api_keys()
+                status_html = f"""<div class="status-panel">
+                    <p style="margin: 0; text-align: center; color: #28a745;">{status_msg}</p>
+                </div>"""
+                return status_html, api_status
+            elif action == "refresh":
+                api_status = get_api_key_status()
+                return None, api_status
+        except Exception as e:
+            error_html = f"""<div class="error-panel">
+                <p style="margin: 0; text-align: center;">❌ Lỗi: {str(e)}</p>
+            </div>"""
+            return error_html, get_api_key_status()
+    
+    # Event handlers  
     single_submit_btn.click(
         fn=predict,
         inputs=[single_image_input, translation_method, font_path, source_language, gemini_api_key, custom_prompt],
-        outputs=[single_output]
+        outputs=single_output
     )
     
-    # Batch processing event handler
     batch_submit_btn.click(
         fn=batch_predict,
-        inputs=[batch_images_input, batch_translation_method, batch_font_path, batch_source_language, batch_gemini_api_key, batch_custom_prompt],
-        outputs=[session_id_state, batch_preview_gallery, batch_file_list, batch_status]
-    ).then(
-        # Show create ZIP button after processing
-        lambda session_id: (
-            gr.Button(visible=True if session_id else False),
-            gr.Textbox(visible=True if session_id else False)
-        ),
-        inputs=[session_id_state],
-        outputs=[create_zip_btn, zip_status]
+        inputs=[folder_input, batch_translation_method, batch_font_path, batch_source_language, batch_gemini_api_key, batch_custom_prompt],
+        outputs=[batch_output, batch_status]
     )
     
-    # ZIP creation event handler  
-    create_zip_btn.click(
-        fn=create_zip_download,
-        inputs=[session_id_state],
-        outputs=[batch_download_zip, zip_status]
-    ).then(
-        # Show download file component
-        lambda zip_path: gr.File(visible=True if zip_path else False),
-        inputs=[batch_download_zip],
-        outputs=[batch_download_zip]
+    refresh_fonts_btn.click(
+        fn=refresh_fonts,
+        outputs=[font_path, font_status]
+    )
+    
+    refresh_status_btn.click(
+        fn=get_api_key_status,
+        outputs=api_status_display
+    )
+    
+    add_key_btn.click(
+        fn=add_new_api_key,
+        inputs=[new_api_key, new_key_name, new_daily_limit],
+        outputs=[key_management_status, api_status_display]
+    )
+    
+    reset_failed_btn.click(
+        fn=reset_failed_api_keys,
+        outputs=[key_management_status, api_status_display]
     )
 
 # Launch the application

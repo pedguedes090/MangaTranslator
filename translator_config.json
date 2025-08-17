@@ -1,0 +1,68 @@
+{
+  "version": "3.0",
+  "last_updated": "2025-08-17T10:40:11.219732",
+  "performance": {
+    "batch_size_auto": true,
+    "optimal_batch_size": 20,
+    "cache_enabled": true,
+    "cache_max_size": 10000,
+    "parallel_processing": true,
+    "max_workers": 4,
+    "timeout_seconds": 30,
+    "retry_attempts": 3
+  },
+  "ai_methods": {
+    "primary_method": "gemini",
+    "fallback_method": "deepinfra",
+    "emergency_fallback": "nllb",
+    "method_selection": "smart",
+    "quality_threshold": 0.8,
+    "speed_priority": false
+  },
+  "api_management": {
+    "rotation_enabled": true,
+    "load_balancing": true,
+    "failure_tolerance": 3,
+    "rate_limit_respect": true,
+    "key_health_check": true,
+    "daily_limit_buffer": 0.1
+  },
+  "monitoring": {
+    "performance_tracking": true,
+    "real_time_feedback": true,
+    "detailed_logging": true,
+    "metrics_collection": true,
+    "auto_optimization": true,
+    "alert_thresholds": {
+      "speed_below_chars_per_sec": 20,
+      "cache_hit_rate_below": 40,
+      "error_rate_above": 0.1
+    }
+  },
+  "quality": {
+    "context_awareness": true,
+    "smart_formality_detection": true,
+    "emotion_preservation": true,
+    "cultural_adaptation": true,
+    "sfx_optimization": true,
+    "bubble_fitting": true,
+    "consistency_checking": true
+  },
+  "languages": {
+    "japanese": {
+      "keigo_detection": true,
+      "honorific_mapping": true,
+      "manga_terminology": true
+    },
+    "chinese": {
+      "classical_terms": true,
+      "hierarchy_respect": true,
+      "martial_arts_terms": true
+    },
+    "korean": {
+      "formality_levels": true,
+      "relationship_mapping": true,
+      "modern_expressions": true
+    }
+  }
+}

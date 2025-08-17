@@ -1,0 +1,47 @@
+{
+  "gemini_api_keys": [
+    {
+      "key": "AIzaSyDWFkxNzfBy6scClgLpCBCSmrrGcHzhEoU",
+      "name": "Primary Key",
+      "usage_count": 100,
+      "last_used": "2025-08-17T10:43:52.688455",
+      "daily_limit": 1000,
+      "is_active": true
+    },
+    {
+      "key": "AIzaSyCJ1lyfk1I0fvkp4RDEe74-LCcES4xj2CU",
+      "name": "Secondary Key",
+      "usage_count": 12,
+      "last_used": "2025-08-17T10:42:57.222497",
+      "daily_limit": 1000,
+      "is_active": true
+    },
+    {
+      "key": "AIzaSyAPtSQk9g6vCwhrGV3opCfEjbZgeLfAmV0",
+      "name": "Secondary2 Key",
+      "usage_count": 111,
+      "last_used": "2025-08-17T12:15:28.156800",
+      "daily_limit": 1000,
+      "is_active": true
+    },
+    {
+      "key": "AIzaSyD20C9la8OEK9Y27Md3jjjUKniCdp_1mfA",
+      "name": "Backup Key",
+      "usage_count": 119,
+      "last_used": "2025-08-17T10:44:54.010116",
+      "daily_limit": 1000,
+      "is_active": true
+    },
+    {
+      "key": "AIzaSyBz3HksvxRXQsEhgnIgz_G2u59k2ud7fHQ",
+      "name": "key goc",
+      "usage_count": 127,
+      "last_used": "2025-08-17T10:47:28.930449",
+      "daily_limit": 1000,
+      "is_active": true
+    }
+  ],
+  "rotation_strategy": "round_robin",
+  "auto_switch_on_error": true,
+  "reset_daily_usage": true
+}

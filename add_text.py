@@ -85,8 +85,8 @@ def add_text(image, text, font_path, bubble_contour):
         bubble_type = "🔷 Balanced"
         boost_factor = 1.2  # Increased boost for balanced bubbles
     
-    # Apply boost factor
-    base_font_size = int(base_font_size * boost_factor)
+    # Apply boost factor and reduce by 19% total (10% + 10%)
+    base_font_size = int(base_font_size * boost_factor * 0.81)
     
     print(f"{bubble_type} bubble detected (ratio: {aspect_ratio:.2f})")
     print(f"🎨 Initial font size: {base_font_size}px (boost: {boost_factor}x)")
@@ -96,7 +96,7 @@ def add_text(image, text, font_path, bubble_contour):
     target_width = int(w * 0.88)   # 88% of width - more aggressive
     target_height = int(h * 0.88)  # 88% of height - more aggressive
     line_spacing_ratio = 1.05      # Even tighter line spacing
-    min_font_size = 16
+    min_font_size = 13             # Reduced by 19% total (was 16)
     
     print(f"🎯 Target area: {target_width}x{target_height} ({target_width * target_height}px²)")
     
@@ -104,8 +104,8 @@ def add_text(image, text, font_path, bubble_contour):
     best_font_size = min_font_size
     best_fit = None
     
-    # Start from a reasonable maximum and work down
-    max_test_font = min(120, max(target_width // 4, target_height // 2))
+    # Start from a reasonable maximum and work down - reduced by 19% total
+    max_test_font = int(min(108, max(target_width // 4, target_height // 2)) * 0.81)
     
     for test_font in range(max_test_font, min_font_size - 1, -1):
         font = ImageFont.truetype(font_path, size=test_font)
@@ -171,7 +171,7 @@ def add_text(image, text, font_path, bubble_contour):
         total_text_height = best_fit['total_height']
         print(f"🎯 OPTIMAL: Using {best_font_size}px font (LARGEST that fits) with {len(lines)} lines")
     else:
-        # Fallback: use minimum font size
+        # Fallback: use minimum font size (reduced by 10%)
         font_size = min_font_size
         font = ImageFont.truetype(font_path, size=font_size)
         line_height = int(font_size * line_spacing_ratio)
