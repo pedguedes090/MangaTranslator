@@ -34,6 +34,7 @@ from detect_bubbles import detect_bubbles
 from process_bubble import process_bubble
 from translator import MangaTranslator
 from multi_ocr import MultiLanguageOCR
+from manga_splitter import MangaSplitter
 
 def load_fonts_from_directory(fonts_dir="fonts"):
     """
@@ -77,6 +78,11 @@ class ImageTask:
     processing_time: float = 0.0
     bubble_count: int = 0
     text_count: int = 0
+    # Splitting options
+    enable_splitting: bool = False
+    split_settings: Optional[Dict[str, Any]] = None
+    original_parts: Optional[List[Image.Image]] = None
+    split_info: Optional[Dict[str, Any]] = None
 
 @dataclass
 class BatchResult:
@@ -109,6 +115,7 @@ class BatchImageProcessor:
         # Initialize shared components
         self.manga_translator = None
         self.multi_ocr = None
+        self.manga_splitter = None
         
         # Processing statistics
         self.stats = {
@@ -118,7 +125,9 @@ class BatchImageProcessor:
             'failed_images': 0,
             'total_processing_time': 0.0,
             'average_batch_time': 0.0,
-            'average_image_time': 0.0
+            'average_image_time': 0.0,
+            'total_split_images': 0,
+            'images_with_splitting': 0
         }
         
         print(f"🚀 Initialized BatchImageProcessor: max_batch_size={max_batch_size}, max_workers={max_workers}")
@@ -132,6 +141,10 @@ class BatchImageProcessor:
         if self.multi_ocr is None:
             self.multi_ocr = MultiLanguageOCR()
             print("✅ Initialized MultiLanguageOCR")
+            
+        if self.manga_splitter is None:
+            self.manga_splitter = MangaSplitter()
+            print("✅ Initialized MangaSplitter")
     
     def create_batches(self, tasks: List[ImageTask]) -> List[List[ImageTask]]:
         """
@@ -447,6 +460,77 @@ Dịch sang tiếng Việt tự nhiên:
                 except Exception as e:
                     print(f"❌ Exception in image processing: {e}")
     
+    def _process_image_splitting(self, tasks: List[ImageTask]) -> List[ImageTask]:
+        """
+        Process image splitting for tasks that have splitting enabled
+        
+        Args:
+            tasks (List[ImageTask]): List of image tasks
+            
+        Returns:
+            List[ImageTask]: Updated list with split images as separate tasks
+        """
+        print("✂️ Processing image splitting...")
+        
+        split_tasks = []
+        
+        for task in tasks:
+            if not task.enable_splitting or not task.split_settings:
+                # No splitting needed, keep original task
+                split_tasks.append(task)
+                continue
+            
+            try:
+                print(f"✂️ Splitting {task.filename}...")
+                
+                # Split the image
+                split_images, split_info = self.manga_splitter.split_image(
+                    task.image,
+                    max_height=task.split_settings.get('max_height'),
+                    white_threshold=task.split_settings.get('white_threshold', 240),
+                    black_threshold=task.split_settings.get('black_threshold', 15),
+                    min_separator_height=task.split_settings.get('min_separator_height', 15),
+                    auto_height=task.split_settings.get('auto_height', True)
+                )
+                
+                # Store original split info
+                task.split_info = split_info
+                task.original_parts = split_images
+                
+                # Create separate tasks for each split part
+                base_filename = os.path.splitext(task.filename)[0]
+                extension = os.path.splitext(task.filename)[1]
+                
+                for i, split_image in enumerate(split_images):
+                    split_task = ImageTask(
+                        id=f"{task.id}_part_{i+1:03d}",
+                        image=split_image,
+                        filename=f"{base_filename}_part_{i+1:03d}{extension}",
+                        translation_method=task.translation_method,
+                        font_path=task.font_path,
+                        source_language=task.source_language,
+                        gemini_api_key=task.gemini_api_key,
+                        custom_prompt=task.custom_prompt,
+                        enable_splitting=False,  # Don't split again
+                        split_settings=None
+                    )
+                    split_tasks.append(split_task)
+                
+                print(f"✅ Split {task.filename} into {len(split_images)} parts")
+                
+                # Update stats
+                self.stats['total_split_images'] += len(split_images)
+                self.stats['images_with_splitting'] += 1
+                
+            except Exception as e:
+                print(f"❌ Error splitting {task.filename}: {str(e)}")
+                # Keep original task if splitting fails
+                task.error = f"Splitting failed: {str(e)}"
+                split_tasks.append(task)
+        
+        print(f"✂️ Splitting complete: {len(tasks)} original → {len(split_tasks)} tasks")
+        return split_tasks
+    
     def process_batch(self, tasks: List[ImageTask]) -> List[ImageTask]:
         """
         Process a single batch of images with optimized pipeline
@@ -464,6 +548,9 @@ Dịch sang tiếng Việt tự nhiên:
         # Initialize components
         gemini_key = tasks[0].gemini_api_key if tasks else None
         self._initialize_components(gemini_key)
+        
+        # Step 0: Process image splitting if enabled
+        tasks = self._process_image_splitting(tasks)
         
         # Step 1: Extract all texts from all images in parallel
         extraction_result = self._extract_all_texts_from_images(tasks)
@@ -497,7 +584,8 @@ Dịch sang tiếng Việt tự nhiên:
     
     def process_images(self, image_files: List[Tuple[Image.Image, str]], 
                       translation_method="gemini", font_path=None,
-                      source_language="auto", gemini_api_key=None, custom_prompt=None) -> BatchResult:
+                      source_language="auto", gemini_api_key=None, custom_prompt=None,
+                      enable_splitting=False, split_settings=None) -> BatchResult:
         """
         Process multiple images with intelligent batching
         
@@ -508,6 +596,8 @@ Dịch sang tiếng Việt tự nhiên:
             source_language (str): Source language code
             gemini_api_key (str, optional): Gemini API key
             custom_prompt (str, optional): Custom translation prompt
+            enable_splitting (bool): Enable image splitting before translation
+            split_settings (dict, optional): Splitting configuration
             
         Returns:
             BatchResult: Complete processing results
@@ -516,10 +606,22 @@ Dịch sang tiếng Việt tự nhiên:
         batch_id = str(uuid.uuid4())[:8]
         
         print(f"🎯 Starting batch processing: {len(image_files)} images (Batch ID: {batch_id})")
+        if enable_splitting:
+            print("✂️ Image splitting is ENABLED")
         
         # Set default font if not provided
         if font_path is None:
             font_path = DEFAULT_FONT
+        
+        # Set default split settings
+        if enable_splitting and split_settings is None:
+            split_settings = {
+                'auto_height': True,
+                'max_height': 1500,
+                'white_threshold': 240,
+                'black_threshold': 15,
+                'min_separator_height': 15
+            }
         
         # Create tasks
         tasks = []
@@ -532,7 +634,9 @@ Dịch sang tiếng Việt tự nhiên:
                 font_path=font_path,
                 source_language=source_language,
                 gemini_api_key=gemini_api_key,
-                custom_prompt=custom_prompt
+                custom_prompt=custom_prompt,
+                enable_splitting=enable_splitting,
+                split_settings=split_settings
             )
             tasks.append(task)
         

@@ -369,18 +369,24 @@ class MangaTranslator:
         # For Gemini, use optimized batch translation (check availability without counting)
         if method == "gemini" and (self.api_key_manager.get_active_key(count_usage=False) or self.fallback_api_key):
             try:
-                # Check cache first for each text
+                # Check cache first for each text ONLY if cache enabled
                 cached_results = []
                 uncached_texts = []
                 uncached_indices = []
                 
-                for i, text in enumerate(texts):
-                    cache_key = self._get_cache_key(text, source_lang, context)
-                    if cache_key in self.translation_cache:
-                        cached_results.append((i, self.translation_cache[cache_key]))
-                    else:
-                        uncached_texts.append(text)
-                        uncached_indices.append(i)
+                if self.optimizer and self.optimizer.config.get("performance", {}).get("cache_enabled", False):
+                    for i, text in enumerate(texts):
+                        cache_key = self._get_cache_key(text, source_lang, context)
+                        if cache_key in self.translation_cache:
+                            cached_results.append((i, self.translation_cache[cache_key]))
+                        else:
+                            uncached_texts.append(text)
+                            uncached_indices.append(i)
+                else:
+                    # Cache disabled - translate all texts fresh
+                    uncached_texts = texts.copy()
+                    uncached_indices = list(range(len(texts)))
+                    print(f"🔄 Cache disabled - fresh translation for all {len(texts)} texts")
                 
                 print(f"📊 Cache hits: {len(cached_results)}/{len(texts)}")
                 
@@ -388,10 +394,11 @@ class MangaTranslator:
                 if uncached_texts:
                     batch_translations = self._translate_with_gemini(uncached_texts, source_lang, context, custom_prompt)
                     
-                    # Store batch results in cache
-                    for text, translation in zip(uncached_texts, batch_translations):
-                        cache_key = self._get_cache_key(text, source_lang, context)
-                        self.translation_cache[cache_key] = translation
+                    # Store batch results in cache ONLY if cache enabled
+                    if self.optimizer and self.optimizer.config.get("performance", {}).get("cache_enabled", False):
+                        for text, translation in zip(uncached_texts, batch_translations):
+                            cache_key = self._get_cache_key(text, source_lang, context)
+                            self.translation_cache[cache_key] = translation
                 else:
                     batch_translations = []
                 
@@ -418,16 +425,21 @@ class MangaTranslator:
         
         for i, text in enumerate(texts):
             try:
-                # Try cache first
-                cache_key = self._get_cache_key(text, source_lang, context)
-                if cache_key in self.translation_cache:
-                    translated = self.translation_cache[cache_key]
-                    cache_hits += 1
-                else:
+                # Try cache first ONLY if enabled
+                translated = None
+                if self.optimizer and self.optimizer.config.get("performance", {}).get("cache_enabled", False):
+                    cache_key = self._get_cache_key(text, source_lang, context)
+                    if cache_key in self.translation_cache:
+                        translated = self.translation_cache[cache_key]
+                        cache_hits += 1
+                
+                if translated is None:
                     # Translate new text
                     translated = self.translate(text, method, source_lang, context, custom_prompt)
-                    # Store in cache
-                    self.translation_cache[cache_key] = translated
+                    # Store in cache ONLY if enabled
+                    if self.optimizer and self.optimizer.config.get("performance", {}).get("cache_enabled", False):
+                        cache_key = self._get_cache_key(text, source_lang, context)
+                        self.translation_cache[cache_key] = translated
                 
                 results.append(translated)
                 
@@ -532,12 +544,15 @@ class MangaTranslator:
                 cache_hits = 0
                 
                 for text in texts_or_text:
-                    # Check cache first for performance
-                    cache_key = self._get_cache_key(text, source_lang, context)
-                    if cache_key in self.translation_cache:
-                        translated = self.translation_cache[cache_key]
-                        cache_hits += 1
-                    else:
+                    # Check cache first for performance ONLY if enabled
+                    translated = None
+                    if self.optimizer and self.optimizer.config.get("performance", {}).get("cache_enabled", False):
+                        cache_key = self._get_cache_key(text, source_lang, context)
+                        if cache_key in self.translation_cache:
+                            translated = self.translation_cache[cache_key]
+                            cache_hits += 1
+                    
+                    if translated is None:
                         translated = self.translate(text, method, source_lang, context, custom_prompt)
                     
                     result.append(translated)
@@ -680,18 +695,22 @@ class MangaTranslator:
         processed_text = self._preprocess_text(text)
         text_length = len(processed_text)
         
-        # Check cache first
-        cache_key = self._get_cache_key(processed_text, source_lang, context)
-        if cache_key in self.translation_cache:
-            self.cache_hits += 1
-            cached_result = self.translation_cache[cache_key]
-            print(f"💾 Cache hit: '{processed_text[:30]}...' -> '{cached_result[:30]}...'")
-            
-            # Record performance for cache hit
-            if PERFORMANCE_MONITORING and start_time:
-                performance_monitor.end_translation_timer(start_time, method, text_length, cache_hit=True)
-            
-            return cached_result
+        # Check cache first ONLY if cache is enabled
+        if self.optimizer and self.optimizer.config.get("performance", {}).get("cache_enabled", False):
+            cache_key = self._get_cache_key(processed_text, source_lang, context)
+            if cache_key in self.translation_cache:
+                self.cache_hits += 1
+                cached_result = self.translation_cache[cache_key]
+                print(f"💾 Cache hit: '{processed_text[:30]}...' -> '{cached_result[:30]}...'")
+                
+                # Record performance for cache hit
+                if PERFORMANCE_MONITORING and start_time:
+                    performance_monitor.end_translation_timer(start_time, method, text_length, cache_hit=True)
+                
+                return cached_result
+        else:
+            print(f"🔄 Cache disabled - fresh translation for: '{processed_text[:30]}...'")
+        
         
         # Validate method and fallback if needed (check availability without counting)
         if method == "gemini" and not (self.api_key_manager.get_active_key(count_usage=False) or self.fallback_api_key):
@@ -717,8 +736,11 @@ class MangaTranslator:
             # Post-process and validate result
             if translated and translated.strip():
                 translated = self._post_process_translation(translated, processed_text)
-                # Store in cache
-                self.translation_cache[cache_key] = translated
+                
+                # Store in cache ONLY if enabled
+                if self.optimizer and self.optimizer.config.get("performance", {}).get("cache_enabled", False):
+                    cache_key = self._get_cache_key(processed_text, source_lang, context)
+                    self.translation_cache[cache_key] = translated
                 
                 # Record performance for successful translation
                 if PERFORMANCE_MONITORING and start_time:
@@ -1212,11 +1234,13 @@ Bạn là chuyên gia dịch manga/comic hàng đầu với khả năng AI siêu
                     }
                 ],
                 "generationConfig": {
-                    "temperature": 0.2,  # Lower for more consistent translations
-                    "maxOutputTokens": min(150, len(text) * 3),  # Dynamic token limit
-                    "topP": 0.8,
-                    "topK": 30,
-                    "stopSequences": ["\n\n", "Giải thích:", "Lưu ý:", "Hoặc:"]  # Stop at explanations
+                    "temperature": 0.1,  # Rất thấp để tăng tính nhất quán
+                    "maxOutputTokens": min(100, max(20, len(text) * 2)),  # Giới hạn chặt output
+                    "topP": 0.7,
+                    "topK": 20,
+                    "stopSequences": [
+                        "\n\n", "Giải thích:", "Lưu ý:", "Translation:", "Note:"
+                    ]
                 },
                 "safetySettings": [
                     {
@@ -1366,7 +1390,9 @@ Bạn là chuyên gia dịch manga/comic hàng đầu với khả năng AI siêu
                     "maxOutputTokens": max_output_tokens,
                     "topP": 0.8,
                     "topK": 30,
-                    "stopSequences": ["\n\n---", "Giải thích:", "Lưu ý:", "Hoặc:"]
+                    "stopSequences": [
+                        "\n\n---", "Giải thích:", "TUYỆT VỜI!", "DƯỚI ĐÂY LÀ", "BẢN DỊCH"
+                    ]
                 },
                 "safetySettings": [
                     {
@@ -1525,86 +1551,40 @@ Bạn là chuyên gia dịch manga/comic hàng đầu với khả năng AI siêu
         
         # Intelligent mega batch handling
         if is_mega_batch and text_count > 20:
-            mega_instructions = f"""
-🚀 MEGA BATCH MODE ACTIVATED: {text_count} texts từ {total_images} trang manga
-⚠️ CRITICAL CONSISTENCY: Bạn PHẢI trả về ĐÚNG {text_count} dòng!
-
-🎯 MEGA CONSISTENCY MATRIX:
-- 👥 NHÂN VẬT: Tên và xưng hô nhất quán xuyên suốt batch
-- 🎭 PHONG CÁCH: Tone dịch đồng bộ (hài→vui, nghiêm→ciddi)  
-- 🗣️ XƯNG HÔ: Consistency relationship patterns
-- 📚 THUẬT NGỮ: Terminology/tên riêng thống nhất 100%
-- 🎨 BUBBLE FIT: Tối ưu độ dài cho từng bubble
-
-💎 MEGA OUTPUT PROTOCOL:
-✅ Input: {text_count} text lines
-✅ Output: ĐÚNG {text_count} translation lines
-❌ NO numbering, NO explanations, NO extra content!
-"""
+            mega_instructions = f"""MEGA BATCH ({text_count} texts từ {total_images} trang): Giữ nhất quán tên nhân vật, xưng hô và phong cách dịch."""
         else:
-            mega_instructions = f"""
-📦 BATCH MODE: Dịch {text_count} texts cùng lúc
-✅ Consistency: Giữ nhất quán trong batch
-✅ Quality: Chất lượng cao cho từng text
-"""
+            mega_instructions = f"""BATCH ({text_count} texts): Dịch chất lượng cao, nhất quán."""
         
         # Custom prompt override với enhancements
         if custom_prompt and custom_prompt.strip():
-            return f"""🎌 CHUYÊN GIA DỊCH MANGA BATCH V3.0
+            return f"""Dịch manga sang tiếng Việt. {mega_instructions}
 
-{mega_instructions}
-
-🎯 CUSTOM INSTRUCTIONS: {custom_prompt.strip()}
-
-📋 CONTEXT: {context_str}
+Custom: {custom_prompt.strip()}
+Context: {context_str}
 
 {lang_rules}
 
-📝 TEXTS CẦN DỊCH:
+Texts:
 {text_list}
 
-⚡ CRITICAL OUTPUT: ĐÚNG {text_count} dòng dịch thuần, không thêm bớt gì!"""
+TRẢ VỀ: {text_count} dòng dịch tiếng Việt thuần."""
 
-        # Standard mega batch prompt
-        return f"""🎌 CHUYÊN GIA DỊCH MANGA BATCH V3.0
-BẠN LÀ: Siêu dịch giả manga với khả năng xử lý hàng loạt chuyên nghiệp
-
-{mega_instructions}
-
-📋 NGỮ CẢNH PHÂN TÍCH: {context_str}
+        # Standard tối ưu batch prompt
+        return f"""Dịch manga sang tiếng Việt. Context: {context_str}
 
 {lang_rules}
 
-🔥 SIÊU QUY TẮC BATCH V3.0:
+QUY TẮC:
+- Dịch chính xác, tự nhiên như người Việt nói
+- Xưng hô phù hợp với mối quan hệ
+- SFX: ngắn gọn, mạnh mẽ (VD: "RẦM!", "BOOM!")
+- Giữ nhất quán trong toàn bộ batch
+- CHỈ trả về bản dịch, không giải thích
 
-💎 CONSISTENCY MATRIX:
-- Nhân vật: Tên, xưng hô, tính cách nhất quán
-- Phong cách: Tone chung cho cả batch  
-- Thuật ngữ: Terminology mapping cố định
-- Quality: Mỗi text đều chất lượng cao
-
-⚡ PROCESSING RULES:
-- CHỈ trả về bản dịch thuần, không số thứ tự
-- Bảo toàn format: {text_count} vào → {text_count} ra
-- Xưng hô thông minh theo context
-- SFX ngắn mạnh, thought mềm mại
-- Bubble fitting cho mỗi text
-
-🗣️ SMART ADDRESSING:
-- Thân: tao/mày, anh/em, mình/cậu
-- Lịch sự: tôi/anh(chị), con/bố(mẹ)  
-- Formal: đệ tử/sư phụ, nhân/ngài
-
-🚫 FORBIDDEN:
-- Giải thích, phân tích, multiple versions
-- Numbering trong output
-- Thêm "(tạm dịch)" hay labels
-- Sai lệch nghĩa gốc
-
-📝 TEXTS CẦN DỊCH:
+Texts cần dịch:
 {text_list}
 
-⚡ OUTPUT REQUIREMENT: ĐÚNG {text_count} dòng dịch, mỗi dòng = 1 bản dịch hoàn chỉnh!"""
+TRẢ VỀ: {text_count} dòng dịch tiếng Việt, mỗi dòng 1 bản dịch hoàn chỉnh."""
 
     def _parse_batch_response(self, response, expected_count):
         """
@@ -1613,9 +1593,37 @@ BẠN LÀ: Siêu dịch giả manga với khả năng xử lý hàng loạt chuy
         if not response or not response.strip():
             return [""] * expected_count
         
+        # Clean response from unwanted prefixes first
+        cleaned_response = response.strip()
+        
+        # Remove problematic prefixes that AI sometimes adds
+        unwanted_prefixes = [
+            "TUYỆT VỜI! DƯỚI ĐÂY LÀ BẢN DỊCH",
+            "ĐOẠN TEXT SANG TIẾNG VIỆT, GIỮ NHẤT QUÁN TÊN NHÂN VẬT, XLING HÔ VÀ PHONG CÁCH DICH:",
+            "BẢN DỊCH", "ĐOẠN TEXT", "SANG TIẾNG VIỆT",
+            "DƯỚI ĐÂY LÀ", "TUYỆT VỜI!", "NHẤT QUÁN",
+            "TÊN NHÂN VẬT", "XLING HÔ", "PHONG CÁCH",
+            "DICH:", "Bản dịch:", "Dịch:"
+        ]
+        
+        for prefix in unwanted_prefixes:
+            if cleaned_response.upper().startswith(prefix.upper()):
+                cleaned_response = cleaned_response[len(prefix):].strip()
+        
+        # Remove any remaining header text before numbered items
+        lines = cleaned_response.split('\n')
+        start_idx = 0
+        for i, line in enumerate(lines):
+            if re.match(r'^\d+\.\s*', line.strip()):
+                start_idx = i
+                break
+        
+        if start_idx > 0:
+            cleaned_response = '\n'.join(lines[start_idx:])
+        
         # Split by lines and clean
         lines = []
-        for line in response.strip().split('\n'):
+        for line in cleaned_response.strip().split('\n'):
             line = line.strip()
             
             # Skip empty lines and separator lines
@@ -1629,8 +1637,14 @@ BẠN LÀ: Siêu dịch giả manga với khả năng xử lý hàng loạt chuy
             # Remove quotes if present
             line = line.strip('"').strip("'").strip('`')
             
-            # Skip meta content
-            if any(skip_word in line.lower() for skip_word in ['giải thích', 'lưu ý', 'hoặc', 'phân tích', 'context']):
+            # Skip meta content and unwanted phrases
+            skip_words = [
+                'giải thích', 'lưu ý', 'hoặc', 'phân tích', 'context',
+                'tuyệt vời', 'dưới đây', 'bản dịch', 'đoạn text',
+                'sang tiếng việt', 'nhất quán', 'tên nhân vật',
+                'xling hô', 'phong cách', 'dich:'
+            ]
+            if any(skip_word in line.lower() for skip_word in skip_words):
                 continue
                 
             if line:  # Only add non-empty lines
@@ -1722,57 +1736,26 @@ BẠN LÀ: Siêu dịch giả manga với khả năng xử lý hàng loạt chuy
         # Get enhanced language-specific rules
         lang_rules = self._get_enhanced_language_rules(source_lang)
         
-        # 🎯 MEGA PROMPT V3.0 - Tối ưu hóa cực mạnh
-        return f"""🎌 CHUYÊN GIA DỊCH MANGA V3.0 - SIÊU TỐI ƯU
-BẠN LÀ: Dịch giả manga chuyên nghiệp hàng đầu Việt Nam với 15+ năm kinh nghiệm
+        # 🎯 PROMPT TỐI ƯU V4.0 - Đảm bảo output sạch 100%
+        return f"""Bạn là chuyên gia dịch manga chuyên nghiệp. Dịch "{text}" sang tiếng Việt.
 
-📋 NGỮ CẢNH PHÂN TÍCH: {context_str}
-
-🎯 NHIỆM VỤ: Dịch "{text}" sang tiếng Việt
+NGỮ CẢNH: {context_str}
 
 {lang_rules}
 
-🔥 SIÊU QUY TẮC DỊCH THUẬT V3.0:
+QUY TẮC DỊCH:
+- Dịch chính xác 100% nghĩa gốc
+- Tự nhiên như người Việt nói
+- Giữ nguyên cảm xúc và phong cách
+- SFX: dịch ngắn gọn và mạnh mẽ (VD: "RẦM!", "BOOM!")
+- Xưng hô phù hợp: tao/mày (thân), anh/em (lịch sự), tôi/bạn (trung tính)
 
-💎 CHẤT LƯỢNG DỊCH:
-- Dịch CHÍNH XÁC nghĩa gốc 100%, không thêm bớt ý
-- Tự nhiên như người Việt nói, không máy móc
-- Giữ nguyên phong cách: hài hước→vui, bi kịch→buồn, hành động→mạnh mẽ
-- Bảo toàn cảm xúc và tone gốc
-
-🗣️ XƯNG HÔ THÔNG MINH:
-- Thân thiết: tao/mày, anh/em, mình/cậu
-- Lịch sự: tôi/anh(chị), con/bố(mẹ), em/anh(chị)
-- Trung tính: tôi/bạn
-- Tôn kính: con/thầy, đệ tử/sư phụ, nhân/ngài
-
-⚡ SFX & ÂM THANH:
-- Dịch ngắn gọn, mạnh mẽ: "RẦM!", "BOOM!", "VỪN!"
-- Giữ cảm giác âm thanh gốc
-- Dùng chữ to khi cần thiết
-
-💭 SUY NGHĨ & NỘI TÂM:
-- Dùng "…" cho băn khoăn
-- Tự nhiên như suy nghĩ thật
-- Ít đại từ, nhiều cảm xúc
-
-🎨 VĂN HÓA VIỆT:
-- Thành ngữ Việt khi phù hợp
-- Tránh Hán Việt khó hiểu
-- Phù hợp lứa tuổi đọc truyện
-
-📐 TỐI ƯU BUBBLE:
-- Câu ngắn dễ đọc trong bubble
-- Xuống dòng thông minh
-- Cân bằng ý nghĩa vs độ dài
-
-🚫 TUYỆT ĐỐI CẤM:
-- Giải thích, phân tích, ghi chú
+TUYỆT ĐỐI CẤM:
+- Giải thích, ghi chú, phân tích
 - Trả về nhiều phiên bản
-- Thêm "(tạm dịch)" hay nhãn
-- Dịch sai nghĩa gốc
+- Thêm nhãn như "(tạm dịch)"
 
-⚡ OUTPUT CHUẨN: CHỈ TRẢ VỀ BẢN DỊCH TIẾNG VIỆT DUY NHẤT!"""
+CHỈ TRẢ VỀ: Bản dịch tiếng Việt duy nhất, không có gì khác."""
     def _analyze_text_context(self, text, source_lang):
         """
         🧠 PHÂN TÍCH NGỮ CẢNH THÔNG MINH - AI Context Analysis
@@ -1862,90 +1845,31 @@ BẠN LÀ: Dịch giả manga chuyên nghiệp hàng đầu Việt Nam với 15+
         Rules được cải tiến dựa trên nghiên cứu ngôn ngữ học và kinh nghiệm thực tế
         """
         if source_lang == "ja":
-            return """🎌 JAPANESE MANGA MASTERY:
-🗣️ KEIGO & XÂY DỰNG NHÂN VẬT:
-- です/ます → "ạ/dạ" (lịch sự)
-- だ/である → không kính ngữ (bình thường)  
-- っす → "nhỉ/đấy" (thân thiện)
-- Senpai/Kouhai → "tiền bối/hậu bối" (hoặc giữ nguyên nếu phổ biến)
-
-⚡ JAPANESE SFX CHUYÊN NGHIỆP:
-- バン→"BÙNG!" | ドン→"RẦM!" | キラキラ→"lấp lánh"
-- ドキドキ→"thình thịch" | プルプル→"run rẩy" | ジーン→"xúc động"
-- ハァハァ→"hổn hển" | ゴゴゴ→"không khí căng thẳng"
-
-🎭 MANGA TROPES:
-- やばい→"Chết tiệt!/Tệ rồi!" | すごい→"Đỉnh quá!/Kinh khủng!"
-- 技→"chiêu thức" | 必殺技→"tuyệt kỹ" | 変身→"biến hình"
-- 頑張って→"Cố lên!" | 大丈夫→"Không sao đâu!"
-
-💎 VĂN HÓA VIỆT HÓA:
-- Onii-chan/Onee-chan → "anh trai/chị gái" (hoặc "anh/chị" nếu thân)
-- Sensei → "thầy/cô" (học đường) hay "sensei" (võ thuật)"""
+            return """JAPANESE:
+- です/ます → "ạ/dạ" (lịch sự), だ/である → bình thường
+- SFX: バン→"BÙNG!", ドン→"RẦM!", キラキラ→"lấp lánh", ドキドキ→"thình thịch"
+- やばい→"Chết tiệt!", すごい→"Tuyệt!", 大丈夫→"Không sao", 頑張って→"Cố lên!"
+- Onii-chan→"anh trai", Sensei→"thầy/cô" """
 
         elif source_lang == "zh":
-            return """🏮 CHINESE MANHUA EXCELLENCE:
-👑 HIERARCHY & TÔN KÍNH:
-- 您→"Ngài/thưa" | 你→"anh/chị" | 朕→"Trẫm" | 本王→"Bản vương"
-- 师父→"sư phụ" | 前辈→"tiền bối" | 晚辈→"hậu bối"
-
-⚔️ VÕLÂM & FANTASY:
-- 武功→"võ công" | 轻功→"khinh công" | 内功→"nội công"
-- 境界→"cảnh giới" | 丹药→"đan dược" | 法宝→"pháp bảo"
-- 修炼→"tu luyện" | 突破→"đột phá" | 渡劫→"vượt kiếp"
-
-🔊 CHINESE SFX:
-- 轰→"BÙMM!" | 砰→"ĐỤC!" | 咔嚓→"KẮC!"
-- 嘶→"xì" | 呼→"phù" | 啪→"tách!"
-
-😊 CẢM THÁN TRUNG HOA:
-- 哼→"Hừ!" | 哎呀→"Ôi trời!" | 天啊→"Trời ơi!"
-- 我的天→"Ôi giời ơi!" | 太好了→"Quá tuyệt!"
-
-🎨 MANHUA STYLE:
-- 加油→"Cố lên!" | 小心→"Cẩn thận!" | 等等→"Đợi đã!"
-- 没事→"Không sao" | 对不起→"Xin lỗi" | 谢谢→"Cảm ơn"
-"""
+            return """CHINESE:
+- 您→"Ngài", 师父→"sư phụ", 前辈→"tiền bối"
+- Võlâm: 武功→"võ công", 内功→"nội công", 修炼→"tu luyện"
+- SFX: 轰→"BÙMM!", 砰→"ĐỤC!", 咔嚓→"KẮC!"
+- 走吧→"Đi thôi!", 没事→"Không sao", 加油→"Cố lên!" """
 
         elif source_lang == "ko":
-            return """🇰🇷 KOREAN MANHWA MASTERY:
-🙇 HONORIFICS & FORMALITY:
-- -요/-습니다 → "ạ/dạ" (lịch sự)
-- Banmal (bình thường) → không kính ngữ
-- -시다 → "nào/đi" (đề nghị lịch sự)
-
-👥 KOREAN RELATIONSHIPS:
-- 형/누나/오빠/언니 → "anh/chị" (phân biệt giới tính khi cần)
-- 선배/후배 → "tiền bối/hậu bối"
-- 친구 → "bạn" | 동생 → "em"
-
-⚡ KOREAN SFX:
-- 쾅→"CẠCH!" | 쿵→"RẦM!" | 휘익→"VỪN!"
-- 따르르→"lách tách" | 두근두근→"thình thịch"
-
-😮 KOREAN EXPRESSIONS:
-- 아이고→"Ôi giời!" | 헐→"Hả?!" | 와→"Wow!"
-- 어머→"Ôi mẹ ơi!" | 진짜→"Thật sự à?"
-
-🎮 MANHWA GAMING:
-- 능력→"năng lực" | 각성→"thức tỉnh" | 레벨업→"lên cấp"
-- 던전→"dungeon" | 길드→"guild" | 보스→"boss"
-"""
+            return """KOREAN:
+- -요/-습니다 → "ạ/dạ" (lịch sự), Banmal → bình thường  
+- 형/누나/오빠/언니 → "anh/chị", 선배/후배 → "tiền bối/hậu bối"
+- SFX: 쾅→"CẠCH!", 쿵→"RẦM!", 휘익→"VỪN!", 두근두근→"thình thịch"
+- 아이고→"Ôi giời!", 진짜→"Thật sự à?", 화이팅→"Cố lên!" """
 
         else:
-            return """🌍 GENERAL COMIC TRANSLATION:
-📚 UNIVERSAL RULES:
-- Phân biệt formal/informal dựa trên ngữ cảnh
-- Nam/nữ, già/trẻ ảnh hưởng cách xưng hô
-- Giữ được tính cách nhân vật qua lời nói
-
-💥 SFX GLOBAL:
-- Âm thanh mạnh: "BOOM!", "BANG!", "CRASH!"
-- Âm thanh nhẹ: "thì thầm", "lách tách", "xào xạc"
-
-😊 CẢM THÁN QUỐC TẾ:
-- "Ồ!", "Trời!", "Chết tiệt!", "Tuyệt vời!"
-- Phù hợp độ tuổi và thể loại truyện"""
+            return """GENERAL:
+- Xưng hô phù hợp với formality và relationship
+- SFX: âm mạnh→"BOOM!/BANG!", âm nhẹ→"lách tách/xào xạc"
+- Giữ tính cách nhân vật qua lời nói """
 
     def _clean_gemini_response(self, response):
         """Enhanced cleaning to remove any AI explanations and return only translation"""
@@ -1955,50 +1879,73 @@ BẠN LÀ: Dịch giả manga chuyên nghiệp hàng đầu Việt Nam với 15+
         # Remove quotes and common prefixes
         cleaned = response.strip().strip('"').strip("'")
         
-        # Remove translation labels
+        # Remove translation labels and prefixes
         prefixes_to_remove = [
             "Bản dịch:", "Dịch:", "Translation:", "Vietnamese:",
             "Tiếng Việt:", "Câu dịch:", "Kết quả:", "Đáp án:",
             "Bản dịch tiếng Việt:", "Vietnamese translation:",
             "Tôi sẽ dịch:", "Đây là bản dịch:", "Câu trả lời:",
+            "Dịch thuật:", "Kết quả dịch:", "Phiên bản:",
+            "CHỈ TRẢ VỀ:", "OUTPUT:", "Đáp án dịch:",
         ]
         
         for prefix in prefixes_to_remove:
             if cleaned.lower().startswith(prefix.lower()):
                 cleaned = cleaned[len(prefix):].strip()
         
-        # Split by common explanation indicators and take first part
+        # Split by explanations and take first clean part
         explanation_splits = [
+            "\n\n", "\n-", "\n*", "\n•", " (giải thích", " (lưu ý",
             " (", "[", "Hoặc", "Tùy", "Nếu", "* ", "• ",
             "- ", "Giải thích:", "Lưu ý:", "Chú thích:",
-            "Có thể", "Tuỳ theo", "Tùy vào"
+            "Có thể", "Tuỳ theo", "Tùy vào", "Ý nghĩa:",
+            "Phiên bản khác:", "Cách khác:", "Hoặc có thể:",
+            "\nGiải", "\nLưu", "\nChú", "\nHoặc"
         ]
         
         for split_pattern in explanation_splits:
             if split_pattern in cleaned:
-                parts = cleaned.split(split_pattern)
+                parts = cleaned.split(split_pattern, 1)
                 if parts[0].strip():
                     cleaned = parts[0].strip()
                     break
         
+        # Remove markdown formatting
+        cleaned = cleaned.replace("**", "").replace("*", "")
+        
         # Clean extra whitespace and newlines
         cleaned = " ".join(cleaned.split())
         
-        # Final validation - if it contains typical AI response patterns, extract the core translation
+        # Extract core translation if contains AI patterns
         ai_patterns = [
             "có thể dịch", "tùy ngữ cảnh", "tuỳ theo", "hoặc là",
-            "một cách khác", "phiên bản khác", "cách khác"
+            "một cách khác", "phiên bản khác", "cách khác", "nghĩa là",
+            "tức là", "hay là", "hoặc dịch", "có nghĩa"
         ]
         
         for pattern in ai_patterns:
             if pattern in cleaned.lower():
-                # Try to extract the first clean sentence before the pattern
+                # Extract the first sentence before the pattern
                 sentences = cleaned.split('.')
                 if sentences and len(sentences[0]) > 3:
                     cleaned = sentences[0].strip()
                     break
-                    
-        return cleaned.rstrip('.,!?;:')
+        
+        # Remove trailing punctuation if excessive
+        cleaned = cleaned.rstrip('.,!?;:')
+        
+        # Final check: if still contains problematic patterns, extract quoted text
+        if any(bad in cleaned.lower() for bad in ["dịch là", "nghĩa gốc", "có thể hiểu"]):
+            # Look for quoted content
+            quotes = ['"', "'", """, """, "'", "'"]
+            for quote in quotes:
+                if quote in cleaned:
+                    parts = cleaned.split(quote)
+                    if len(parts) >= 3 and len(parts[1]) > 2:
+                        cleaned = parts[1].strip()
+                        break
+        
+        return cleaned
 
     def _analyze_batch_context(self, texts, source_lang):
         """

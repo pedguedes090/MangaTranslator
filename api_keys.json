@@ -1,13 +1,13 @@
 {
   "gemini_api_keys": [
     {
-      "key": "1",
+      "key": "",
       "name": "Primary Key",
-      "usage_count": 100,
-      "last_used": "2025-08-17T10:43:52.688455",
+      "usage_count": 105,
+      "last_used": "2025-08-17T23:32:07.868613",
       "daily_limit": 1000,
       "is_active": true
-    },
+    }
     
   ],
   "rotation_strategy": "round_robin",

@@ -4,7 +4,7 @@
   "performance": {
     "batch_size_auto": true,
     "optimal_batch_size": 20,
-    "cache_enabled": true,
+    "cache_enabled": false,
     "cache_max_size": 10000,
     "parallel_processing": true,
     "max_workers": 4,

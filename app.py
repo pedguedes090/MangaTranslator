@@ -12,6 +12,7 @@ from process_bubble import process_bubble
 from translator import MangaTranslator
 from multi_ocr import MultiLanguageOCR
 from batch_image_processor import batch_processor, ImageTask
+from manga_splitter import MangaSplitter
 
 # External libraries
 from ultralytics import YOLO
@@ -170,6 +171,30 @@ def reset_failed_api_keys():
         return "✅ Đã reset tất cả API key bị lỗi!", get_api_key_status()
     except Exception as e:
         return f"❌ Lỗi reset: {e}", get_api_key_status()
+
+def test_all_api_keys():
+    """Test health of all API keys"""
+    try:
+        translator = get_global_translator()
+        health_results = translator.api_key_manager.test_all_keys_health()
+        
+        healthy_count = sum(1 for status in health_results.values() if status)
+        total_count = len(health_results)
+        
+        result_msg = f"✅ Kiểm tra hoàn thành! Hoạt động: {healthy_count}/{total_count} keys"
+        
+        return result_msg, get_api_key_status()
+    except Exception as e:
+        return f"❌ Lỗi test API keys: {e}", get_api_key_status()
+
+def test_failed_api_keys():
+    """Test and recover failed API keys"""
+    try:
+        translator = get_global_translator()
+        translator.api_key_manager.auto_test_failed_keys()
+        return "✅ Đã kiểm tra lại các key bị lỗi!", get_api_key_status()
+    except Exception as e:
+        return f"❌ Lỗi test failed keys: {e}", get_api_key_status()
 
 class ImageCache:
     """Cache manager for processed images"""
@@ -397,7 +422,7 @@ def process_single_image(img, translation_method, font_path, source_language="au
 
     return Image.fromarray(image)
 
-def process_batch_cached(images, translation_method, font_path, source_language="auto", gemini_api_key=None, custom_prompt=None):
+def process_batch_cached(images, translation_method, font_path, source_language="auto", gemini_api_key=None, custom_prompt=None, enable_splitting=False, split_settings=None):
     """
     Enhanced batch processing using the new BatchImageProcessor
     Supports processing up to 20 images simultaneously with optimal resource usage
@@ -448,7 +473,9 @@ def process_batch_cached(images, translation_method, font_path, source_language=
             font_path=font_path,
             source_language=source_language,
             gemini_api_key=gemini_api_key,
-            custom_prompt=custom_prompt
+            custom_prompt=custom_prompt,
+            enable_splitting=enable_splitting,
+            split_settings=split_settings
         )
         
         # Convert batch results to cache format
@@ -501,19 +528,25 @@ def process_batch_cached(images, translation_method, font_path, source_language=
         total_texts = batch_result.summary['total_texts']
         batches_created = batch_result.summary['batches_created']
         
+        # Get splitting statistics
+        splitting_stats = ""
+        if batch_processor.stats.get('images_with_splitting', 0) > 0:
+            splitting_stats = f"""
+✂️ Splitting: {batch_processor.stats['images_with_splitting']} images split into {batch_processor.stats['total_split_images']} parts"""
+        
         if failed_count == 0:
             status_msg = f"""✅ BATCH PROCESSING COMPLETE!
 📊 Successfully processed: {successful_count}/{total_images} images
 ⏱️ Total time: {total_time:.2f}s (avg {total_time/total_images:.2f}s per image)
 🎯 Detected: {total_bubbles} bubbles, {total_texts} text blocks
-📦 Processed in {batches_created} optimized batches
+📦 Processed in {batches_created} optimized batches{splitting_stats}
 🚀 Batch efficiency: {batch_result.summary['api_efficiency']}"""
         else:
             status_msg = f"""⚠️ BATCH PROCESSING COMPLETE WITH ERRORS!
 📊 Results: {successful_count} successful, {failed_count} failed
 ⏱️ Total time: {total_time:.2f}s
 🎯 Detected: {total_bubbles} bubbles, {total_texts} text blocks
-📦 Processed in {batches_created} optimized batches"""
+📦 Processed in {batches_created} optimized batches{splitting_stats}"""
         
         # Print batch processing statistics
         print("\n" + "="*50)
@@ -547,18 +580,21 @@ def process_batch_cached(images, translation_method, font_path, source_language=
         
         # Fallback to original processing
         print("🔄 Falling back to original processing method...")
-        return process_batch_cached_fallback(images, translation_method, font_path, source_language, gemini_api_key, custom_prompt)
+        return process_batch_cached_fallback(images, translation_method, font_path, source_language, gemini_api_key, custom_prompt, enable_splitting, split_settings)
 
-def process_batch_cached_fallback(images, translation_method, font_path, source_language="auto", gemini_api_key=None, custom_prompt=None):
+def process_batch_cached_fallback(images, translation_method, font_path, source_language="auto", gemini_api_key=None, custom_prompt=None, enable_splitting=False, split_settings=None):
     """Fallback batch processing using original method"""
     
     session_id = str(uuid.uuid4())
     total_images = len(images)
     
     print(f"🔄 Fallback batch processing: {total_images} images")
+    if enable_splitting:
+        print("✂️ Image splitting is ENABLED in fallback mode")
     
     processed_images = []
     preview_images = []
+    manga_splitter = MangaSplitter() if enable_splitting else None
     
     for idx, img_file in enumerate(images):
         try:
@@ -572,28 +608,57 @@ def process_batch_cached_fallback(images, translation_method, font_path, source_
                 img = Image.open(img_file.name)
                 original_name = img_file.name if hasattr(img_file, 'name') else f"image_{idx+1}.png"
             
-            # Process the image using existing function
-            processed_img = process_single_image(
-                img, translation_method, font_path, 
-                source_language, gemini_api_key, custom_prompt
-            )
+            # Handle image splitting if enabled
+            images_to_process = [(img, original_name)]
             
-            # Generate output filename
-            base_name = os.path.splitext(os.path.basename(original_name))[0]
-            output_filename = f"{base_name}_translated.png"
+            if enable_splitting and split_settings and manga_splitter:
+                try:
+                    split_images, split_info = manga_splitter.split_image(
+                        img,
+                        max_height=split_settings.get('max_height', 1500),
+                        white_threshold=split_settings.get('white_threshold', 240),
+                        black_threshold=split_settings.get('black_threshold', 15),
+                        min_separator_height=split_settings.get('min_separator_height', 15),
+                        auto_height=split_settings.get('auto_height', True)
+                    )
+                    
+                    if len(split_images) > 1:
+                        print(f"✂️ Split {original_name} into {len(split_images)} parts")
+                        images_to_process = []
+                        base_name = os.path.splitext(original_name)[0]
+                        extension = os.path.splitext(original_name)[1]
+                        
+                        for i, split_img in enumerate(split_images):
+                            part_name = f"{base_name}_part_{i+1:03d}{extension}"
+                            images_to_process.append((split_img, part_name))
+                    
+                except Exception as e:
+                    print(f"❌ Error splitting {original_name}: {str(e)}")
+                    # Continue with original image if splitting fails
             
-            # Store in cache (in memory)
-            image_data = {
-                "original_name": original_name,
-                "output_name": output_filename,
-                "image": processed_img,
-                "status": "success",
-                "index": idx
-            }
-            processed_images.append(image_data)
-            
-            # Add to preview list (for Gradio Gallery)
-            preview_images.append(processed_img)
+            # Process each image (original or split parts)
+            for img_to_process, name_to_process in images_to_process:
+                processed_img = process_single_image(
+                    img_to_process, translation_method, font_path, 
+                    source_language, gemini_api_key, custom_prompt
+                )
+                
+                # Generate output filename
+                base_name = os.path.splitext(os.path.basename(name_to_process))[0]
+                output_filename = f"{base_name}_translated.png"
+                
+                # Store in cache (in memory)
+                image_data = {
+                    "original_name": name_to_process,
+                    "output_name": output_filename,
+                    "image": processed_img,
+                    "status": "success",
+                    "index": len(processed_images)
+                }
+                processed_images.append(image_data)
+                
+                # Add to preview list (for Gradio Gallery)
+                preview_images.append(processed_img)
             
             print(f"Successfully processed: {original_name}")
             
@@ -687,12 +752,25 @@ def create_zip_download(session_id):
     else:
         return None, "Cannot create ZIP file. Check session or no successful images."
 
-def batch_predict(images, translation_method, font_path, source_language="auto", gemini_api_key=None, custom_prompt=None):
+def batch_predict(images, translation_method, font_path, source_language="auto", gemini_api_key=None, custom_prompt=None, 
+                 enable_splitting=False, auto_height=True, max_height=1500, white_threshold=240, black_threshold=15, min_separator_height=15):
     """Batch prediction function for multiple images (cached version)"""
+    
+    # Prepare split settings if splitting is enabled
+    split_settings = None
+    if enable_splitting:
+        split_settings = {
+            'auto_height': auto_height,
+            'max_height': max_height,
+            'white_threshold': white_threshold,
+            'black_threshold': black_threshold,
+            'min_separator_height': min_separator_height
+        }
     
     session_id, preview_images, status_msg = process_batch_cached(
         images, translation_method, font_path, 
-        source_language, gemini_api_key, custom_prompt
+        source_language, gemini_api_key, custom_prompt,
+        enable_splitting, split_settings
     )
     
     if session_id:
@@ -700,7 +778,7 @@ def batch_predict(images, translation_method, font_path, source_language="auto",
     else:
         file_list_html = "<p>Cannot process batch</p>"
     
-    return session_id, preview_images, file_list_html, status_msg
+    return preview_images, status_msg
 
 # Legacy single image function
 def predict(img, translation_method, font_path, source_language="auto", gemini_api_key=None, custom_prompt=None):
@@ -789,7 +867,7 @@ with gr.Blocks(title=TITLE, theme=gr.themes.Soft()) as demo:
                 with gr.Column():
                     folder_input = gr.File(
                         file_count="multiple",
-                        file_types=["image"],
+                        file_types=[".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff", ".gif"],
                         label="Chọn ảnh để xử lý hàng loạt"
                     )
                     
@@ -831,6 +909,55 @@ with gr.Blocks(title=TITLE, theme=gr.themes.Soft()) as demo:
                         placeholder="Để trống để sử dụng prompt tự động",
                         value=""
                     )
+                    
+                    # ✂️ Splitting Settings Section
+                    with gr.Accordion("✂️ Cài Đặt Cắt Ảnh (Tuỳ Chọn)", open=False):
+                        batch_enable_splitting = gr.Checkbox(
+                            label="🔧 Bật chức năng cắt ảnh trước khi dịch",
+                            value=False,
+                            info="Tự động cắt ảnh dài thành nhiều phần nhỏ để dịch hiệu quả hơn"
+                        )
+                        
+                        batch_auto_height = gr.Checkbox(
+                            label="🤖 Tự động điều chỉnh chiều cao tối ưu",
+                            value=True,
+                            info="Tự động tính chiều cao phù hợp dựa trên kích thước ảnh"
+                        )
+                        
+                        batch_max_height = gr.Slider(
+                            minimum=1500, maximum=5000, value=1500, step=100,
+                            label="📏 Chiều cao tối đa mỗi phần (px)",
+                            info="Chỉ áp dụng khi tắt chế độ tự động (tối thiểu 1500px)",
+                            visible=False
+                        )
+                        
+                        batch_white_threshold = gr.Slider(
+                            minimum=200, maximum=255, value=240, step=5,
+                            label="⚪ Ngưỡng pixel trắng",
+                            info="Độ trắng để nhận diện vùng separator (240 = rất trắng)"
+                        )
+                        
+                        batch_black_threshold = gr.Slider(
+                            minimum=0, maximum=50, value=15, step=5,
+                            label="⚫ Ngưỡng pixel đen",
+                            info="Độ đen để nhận diện vùng dramatic (15 = rất đen)"
+                        )
+                        
+                        batch_min_separator_height = gr.Slider(
+                            minimum=5, maximum=50, value=15, step=5,
+                            label="📐 Chiều cao tối thiểu vùng separator",
+                            info="Vùng separator phải cao ít nhất bao nhiêu pixel"
+                        )
+                        
+                        # Toggle manual height visibility
+                        def toggle_manual_height(auto_mode):
+                            return gr.update(visible=not auto_mode)
+                        
+                        batch_auto_height.change(
+                            toggle_manual_height,
+                            inputs=[batch_auto_height],
+                            outputs=[batch_max_height]
+                        )
                     
                     batch_submit_btn = gr.Button("Xử Lý Hàng Loạt", variant="primary")
                 
@@ -885,6 +1012,19 @@ with gr.Blocks(title=TITLE, theme=gr.themes.Soft()) as demo:
                         reset_failed_btn = gr.Button(
                             "♻️ Reset Failed",
                             variant="secondary", 
+                            elem_classes="action-button secondary-button"
+                        )
+                    
+                    # Health check buttons in a second row
+                    with gr.Row():
+                        test_all_btn = gr.Button(
+                            "🔍 Test All Keys",
+                            variant="secondary",
+                            elem_classes="action-button secondary-button"
+                        )
+                        test_failed_btn = gr.Button(
+                            "🔁 Test Failed Keys",
+                            variant="secondary",
                             elem_classes="action-button secondary-button"
                         )
                 
@@ -1082,7 +1222,8 @@ with gr.Blocks(title=TITLE, theme=gr.themes.Soft()) as demo:
     
     batch_submit_btn.click(
         fn=batch_predict,
-        inputs=[folder_input, batch_translation_method, batch_font_path, batch_source_language, batch_gemini_api_key, batch_custom_prompt],
+        inputs=[folder_input, batch_translation_method, batch_font_path, batch_source_language, batch_gemini_api_key, batch_custom_prompt,
+                batch_enable_splitting, batch_auto_height, batch_max_height, batch_white_threshold, batch_black_threshold, batch_min_separator_height],
         outputs=[batch_output, batch_status]
     )
     
@@ -1104,6 +1245,17 @@ with gr.Blocks(title=TITLE, theme=gr.themes.Soft()) as demo:
     
     reset_failed_btn.click(
         fn=reset_failed_api_keys,
+        outputs=[key_management_status, api_status_display]
+    )
+    
+    # New health check button handlers
+    test_all_btn.click(
+        fn=test_all_api_keys,
+        outputs=[key_management_status, api_status_display]
+    )
+    
+    test_failed_btn.click(
+        fn=test_failed_api_keys,
         outputs=[key_management_status, api_status_display]
     )
 
