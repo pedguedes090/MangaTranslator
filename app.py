@@ -1261,4 +1261,4 @@ with gr.Blocks(title=TITLE, theme=gr.themes.Soft()) as demo:
 
 # Launch the application
 if __name__ == "__main__":
-    demo.launch(debug=False, share=False)
+    demo.launch(debug=False, share=True)
